@@ -1,0 +1,41 @@
+{
+    "_doc": [
+        "Gagaclaw Cron Job Configuration",
+        "",
+        "Fields:",
+        "  id       — Unique identifier (string)",
+        "  enabled  — Enable/disable (true/false)",
+        "  cron     — Cron expression: min hour day month weekday (e.g., '*/5 * * * *' = every 5 min, '0 9 * * *' = daily 09:00)",
+        "  prompt   — The message/prompt to send",
+        "  model    — flash / low / high / opus / sonnet / gpt (omit to use gagaclaw.json defaults)",
+        "  mode     — planning / fast (omit to use defaults)",
+        "  agentic  — true/false enable tool usage (omit to use defaults)",
+        "  cascadeId — Reuse this conversation; null = create new each time",
+        "  notify   — Notification target: { \"telegram\": chatId } and/or { \"file\": \"path\" }",
+        "  note     — Human-readable note (ignored by code)",
+        "  nextRun  — Auto-calculated by cron.js, do not edit manually",
+        "",
+        "Cron expression cheat sheet:",
+        "  */5 * * * *     Every 5 minutes",
+        "  0 * * * *       Every hour on the hour",
+        "  0 9 * * *       Daily at 09:00",
+        "  0 9 * * 1-5     Weekdays at 09:00",
+        "  0 0 1 * *       1st of every month at 00:00",
+        "  30 8,20 * * *   Daily at 08:30 and 20:30"
+    ],
+    "jobs": [
+        {
+            "note": "Example: hourly news digest",
+            "id": "news-hourly",
+            "enabled": false,
+            "cron": "0 * * * *",
+            "prompt": "Find 5 trending news articles that match my interests (refer to memory.md)",
+            "model": "high",
+            "mode": "fast",
+            "agentic": true,
+            "notify": {
+                "telegram": true
+            }
+        }
+    ]
+}

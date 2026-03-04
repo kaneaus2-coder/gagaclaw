@@ -1,0 +1,10 @@
+{
+    "mcpServers": {
+        "gagaclaw_recommend": {
+            "command": "node",
+            "args": [
+                "gagaclaw_recommend_mcp/index.js"
+            ]
+        }
+    }
+}

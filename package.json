@@ -1,0 +1,16 @@
+{
+  "name": "gagaclaw",
+  "version": "1.0.0",
+  "main": "telegram.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "joeIvan2",
+  "license": "GPL-3.0",
+  "description": "Bridge layer connecting Telegram/CLI to Antigravity IDE",
+  "dependencies": {
+    "groq-sdk": "^0.37.0",
+    "puppeteer-core": "^24.37.5"
+  }
+}

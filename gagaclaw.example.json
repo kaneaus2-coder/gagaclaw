@@ -1,0 +1,22 @@
+{
+    "telegram": {
+        "token": "PASTE_YOUR_BOT_TOKEN_HERE",
+        "allowedUsers": [0]
+    },
+    "app": {
+        "name": "Antigravity",
+        "targetExecutables": ["Antigravity.exe"]
+    },
+    "activeWorkspace": "workspace",
+    "yoloMode": false,
+    "groq": {
+        "apiKey": "PASTE_YOUR_GROQ_API_KEY_HERE"
+    },
+    "defaults": {
+        "model": "high",
+        "mode": "planning",
+        "agentic": true,
+        "cdpPorts": [9229],
+        "cdpHost": "127.0.0.1"
+    }
+}
