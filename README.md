@@ -4,6 +4,8 @@
 
 <h1 align="center">Gagaclaw v1.0</h1>
 
+> **The remote controller for your Antigravity.**
+
 > **Windows only** — Currently supports Windows with [Antigravity IDE](https://www.antigravity.so).
 
 **Gagaclaw** is a bridge layer that connects messaging platforms (Telegram, CLI) to [Antigravity IDE](https://www.antigravity.so), turning it into a remotely controllable AI agent.
@@ -280,6 +282,9 @@ Tell me:
 </p>
 
 <h1 align="center">Gagaclaw v1.0</h1>
+
+> **The remote controller for your Antigravity.**
+> （你的專屬 Antigravity 遠端遙控器）
 
 > **僅支援 Windows** — 目前僅支援 Windows 搭配 [Antigravity IDE](https://www.antigravity.so) 使用。
 
