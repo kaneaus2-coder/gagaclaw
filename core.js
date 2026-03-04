@@ -504,6 +504,8 @@ class Session extends EventEmitter {
         this._turnDoneTimer = null;
         this._awaitingResponse = false;
         this._stream = null;
+        this._lastServerError = '';
+        this._lastServerErrorTime = 0;
 
         this._applyModel();
         this._applyMode();
@@ -624,11 +626,10 @@ class Session extends EventEmitter {
             pktWrite(`LATEST_STEP_UPDATE ${this._latestStepIndex} → ${info.stepIndex}`);
             this._latestStepIndex = info.stepIndex;
         }
-        // Server error (e.g. 503 capacity exhausted) → emit and end turn
+        // Server error (e.g. 503) → store but don't emit yet (IDE may auto-retry)
         if (info.serverError) {
             const e = info.serverError;
-            const msg = e.code ? `Server error ${e.code}: ${e.message || e.technical}` : (e.message || 'Unknown server error');
-            this.emit('error', msg);
+            this._lastServerError = e.code ? `Server error ${e.code}: ${e.message || e.technical}` : (e.message || 'Unknown server error');
         }
 
         if (!this._awaitingResponse) return;
@@ -648,6 +649,7 @@ class Session extends EventEmitter {
                 const delta = r.slice(this._lastResponse.length);
                 this.emit('response', delta, r);
                 this._lastResponse = r;
+                this._lastServerError = ''; // retry succeeded, clear error
             }
         }
         // Tool calls — record for context
@@ -688,7 +690,12 @@ class Session extends EventEmitter {
             this._turnDoneTimer = setTimeout(() => {
                 this._turnDoneTimer = null;
                 if (this._awaitingResponse && !this._pendingToolCall) {
+                    // If no response was produced and there was a server error, report it
+                    if (!this._lastResponse && !this._lastThinking && this._lastServerError) {
+                        this.emit('error', this._lastServerError);
+                    }
                     this._awaitingResponse = false;
+                    this._lastServerError = '';
                     this.emit('turnDone');
                 }
             }, 5000);
@@ -1040,6 +1047,30 @@ function splitText(text, maxLen) {
     return chunks;
 }
 
+// ─── Version check ──────────────────────────────────────────────────────────
+const LOCAL_VERSION = require('./package.json').version;
+
+async function checkUpdate() {
+    try {
+        const data = await new Promise((resolve, reject) => {
+            https.get('https://raw.githubusercontent.com/joeIvan2/gagaclaw/main/package.json', {
+                headers: { 'User-Agent': 'gagaclaw' }, timeout: 5000,
+            }, res => {
+                let body = '';
+                res.on('data', d => body += d);
+                res.on('end', () => resolve(body));
+            }).on('error', reject).on('timeout', function () { this.destroy(); reject(new Error('timeout')); });
+        });
+        const remote = JSON.parse(data).version;
+        if (remote !== LOCAL_VERSION) {
+            return { upToDate: false, local: LOCAL_VERSION, remote };
+        }
+        return { upToDate: true, local: LOCAL_VERSION, remote };
+    } catch {
+        return { upToDate: null, local: LOCAL_VERSION, remote: null };
+    }
+}
+
 // ─── Exports ─────────────────────────────────────────────────────────────────
 module.exports = {
     // Config
@@ -1057,6 +1088,8 @@ module.exports = {
     getCurrentWorkspace, listWorkspaces, switchWorkspace,
     // Utilities
     splitText,
+    // Version
+    LOCAL_VERSION, checkUpdate,
     // Logging
     pktWrite,
 };

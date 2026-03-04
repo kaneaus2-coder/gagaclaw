@@ -7,7 +7,7 @@
 const https = require('https');
 const fs = require('fs');
 const path = require('path');
-const { createSession, MODELS, MODEL_BY_ID, MODES, loadConfig, getCurrentWorkspace, listWorkspaces, switchWorkspace, splitText } = require('./core');
+const { createSession, MODELS, MODEL_BY_ID, MODES, loadConfig, getCurrentWorkspace, listWorkspaces, switchWorkspace, splitText, LOCAL_VERSION, checkUpdate } = require('./core');
 const cron = require('./cronjob');
 
 // ─── Config ──────────────────────────────────────────────────────────────────
@@ -186,6 +186,19 @@ async function main() {
         ? `[✓] Resumed: ${id.substring(0, 8)}... — ${title}`
         : `[✓] New cascade: ${id.substring(0, 8)}...`);
     console.log(`[🤖] Model: ${session.modelLabel} | Mode: ${session.modeLabel} | Agentic: ${session.agenticEnabled} | YOLO: ${session.yoloMode ? 'ON' : 'OFF'}`);
+
+    // Version check (non-blocking)
+    checkUpdate().then(v => {
+        if (v.upToDate === false) {
+            const msg = `[⬆] Update available: v${v.local} → v${v.remote}  (git pull to update)`;
+            console.log(msg);
+            if (ADMIN_CHAT_ID) tgSend(String(ADMIN_CHAT_ID), `⬆️ Gagaclaw update: <b>v${v.local}</b> → <b>v${v.remote}</b>\nRun <code>git pull</code> to update.`, { parse_mode: 'HTML' }).catch(() => {});
+        } else if (v.upToDate) {
+            console.log(`[✓] Gagaclaw v${v.local} (up to date)`);
+        } else {
+            console.log(`[✓] Gagaclaw v${v.local} (update check failed)`);
+        }
+    });
 
     // Per-chat state (keyed by chatId)
     const chatState = {};

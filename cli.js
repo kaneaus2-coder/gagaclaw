@@ -7,7 +7,7 @@
 const readline = require('readline');
 const fs = require('fs');
 const path = require('path');
-const { createSession, createExtraSession, MODELS, MODEL_BY_ID, MODES, loadConfig, getCurrentWorkspace, listWorkspaces, switchWorkspace, splitText } = require('./core');
+const { createSession, createExtraSession, MODELS, MODEL_BY_ID, MODES, loadConfig, getCurrentWorkspace, listWorkspaces, switchWorkspace, splitText, LOCAL_VERSION, checkUpdate } = require('./core');
 const cron = require('./cronjob');
 
 // ─── Log file (cleared on each startup) ──────────────────────────────────────
@@ -51,6 +51,17 @@ async function main() {
         log(c.green, '✓', `New cascade: ${id.substring(0, 8)}...`);
     }
     log(c.cyan, '🤖', `Model: ${session.modelLabel} | Mode: ${session.modeLabel} | Agentic: ${session.agenticEnabled} | YOLO: ${session.yoloMode ? 'ON ⚡' : 'OFF'}`);
+
+    // Version check (non-blocking)
+    checkUpdate().then(v => {
+        if (v.upToDate === false) {
+            log(c.yellow, '⬆', `Update available: v${v.local} → v${v.remote}  (git pull to update)`);
+        } else if (v.upToDate) {
+            log(c.green, '✓', `Gagaclaw v${v.local} (up to date)`);
+        } else {
+            log(c.green, '✓', `Gagaclaw v${v.local} (update check failed)`);
+        }
+    });
 
     // ── readline REPL ──
     const rl = readline.createInterface({
