@@ -34,7 +34,7 @@
             "mode": "fast",
             "agentic": true,
             "notify": {
-                "telegram": true
+                "telegram": 0
             }
         }
     ]

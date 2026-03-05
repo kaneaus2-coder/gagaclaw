@@ -321,7 +321,7 @@ start-cron.sh:
       sleep 5
   fi
   echo "⏰ Starting Cron Scheduler... (Press Ctrl+C to stop)"
-  node cronjob.js
+  node cron.js
   read -p "Press Enter to close..."
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -377,7 +377,7 @@ start-cron.sh:
       sleep 5
   fi
   echo "⏰ Starting Cron Scheduler... (Press Ctrl+C to stop)"
-  node cronjob.js
+  node cron.js
   read -p "Press Enter to close..."
 
 ── [B2] Host-to-Container scripts (uses docker exec): ──
@@ -415,7 +415,7 @@ start-cron.sh:
       sleep 5
   fi
   echo "⏰ Starting Cron Scheduler... (Press Ctrl+C to stop)"
-  node cronjob.js
+  node cron.js
   read -p "Press Enter to close..."
 
 Note for [B2]: The container must use --network=host so CDP port 9229 is accessible
@@ -793,7 +793,7 @@ start-cron.sh:
       sleep 5
   fi
   echo "⏰ 正在啟動排程任務...（按 Ctrl+C 停止）"
-  node cronjob.js
+  node cron.js
   read -p "按 Enter 關閉..."
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -849,7 +849,7 @@ start-cron.sh:
       sleep 5
   fi
   echo "⏰ 正在啟動排程任務...（按 Ctrl+C 停止）"
-  node cronjob.js
+  node cron.js
   read -p "按 Enter 關閉..."
 
 ── [B2] 主機對容器腳本（使用 docker exec）：──
@@ -887,7 +887,7 @@ start-cron.sh:
       sleep 5
   fi
   echo "⏰ 正在啟動排程任務...（按 Ctrl+C 停止）"
-  node cronjob.js
+  node cron.js
   read -p "按 Enter 關閉..."
 
 [B2] 注意：容器必須使用 --network=host，CDP port 9229 才能從主機的
