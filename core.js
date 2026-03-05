@@ -1,5 +1,5 @@
 /**
- * Gagaclaw Core v1.0 — Shared Engine Module
+ * Gagaclaw Core v1.1 — Shared Engine Module
  * Encapsulates config, HTTP transport, auth extraction, stream parsing, session management
  * Interface layers (CLI/Telegram/Discord) only need to require this module
  */

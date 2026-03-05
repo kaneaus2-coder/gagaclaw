@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Gagaclaw CLI v1.0 — Interactive terminal interface
+ * Gagaclaw CLI v1.1 — Interactive terminal interface
  * Uses core.js engine, provides readline REPL, ANSI display, command handling
  */
 

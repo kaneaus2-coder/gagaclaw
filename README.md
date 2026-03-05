@@ -2,7 +2,7 @@
   <img src="gagaclaw_logo.png" alt="Gagaclaw" width="280">
 </p>
 
-<h1 align="center">Gagaclaw v1.0</h1>
+<h1 align="center">Gagaclaw v1.1</h1>
 
 > **The remote controller for your Antigravity.**
 
@@ -471,7 +471,7 @@ Step 9 — Done:
   <img src="gagaclaw_logo.png" alt="Gagaclaw" width="280">
 </p>
 
-<h1 align="center">Gagaclaw v1.0</h1>
+<h1 align="center">Gagaclaw v1.1</h1>
 
 > **The remote controller for your Antigravity.**
 > （你的專屬 Antigravity 遠端遙控器）

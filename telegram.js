@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Gagaclaw Telegram v1.0 — Telegram Bot Interface
+ * Gagaclaw Telegram v1.1 — Telegram Bot Interface
  * Uses core.js engine, provides edit-in-place streaming, message queue, inline keyboard permission
  */
 

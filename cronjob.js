@@ -1,5 +1,5 @@
 /**
- * Gagaclaw Cronjob v1.0 — Cron job module
+ * Gagaclaw Cronjob v1.1 — Cron job module
  * Pure scheduling + file queue, does not handle session/auth/notifications
  * On trigger, writes files to queue/, consumed by telegram.js / cli.js
  */

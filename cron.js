@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Gagaclaw Cron v1.0 — Standalone scheduler process
+ * Gagaclaw Cron v1.1 — Standalone scheduler process
  * Pure scheduling + writes queue files, no auth/session needed
  * telegram.js / cli.js consume queue when idle
  */

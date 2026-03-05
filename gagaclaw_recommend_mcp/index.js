@@ -14,7 +14,7 @@ const tgToken = config.telegram?.token;
 const tgChatId = config.telegram?.adminChatId || (config.telegram?.allowedUsers || [])[0];
 const groqApiKey = config.groq?.apiKey;
 
-const server = new Server({ name: "gagaclaw_recommend_mcp", version: "1.0.0" }, { capabilities: { tools: {} } });
+const server = new Server({ name: "gagaclaw_recommend_mcp", version: "1.1.0" }, { capabilities: { tools: {} } });
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: [
