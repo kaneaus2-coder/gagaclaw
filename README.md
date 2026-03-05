@@ -6,7 +6,7 @@
 
 > **The remote controller for your Antigravity.**
 
-> Supports **Windows** and **Linux** (including Docker) with [Antigravity IDE](https://www.antigravity.so).
+> Supports **Windows**, **Linux**, and **macOS** (including Docker) with [Antigravity IDE](https://www.antigravity.so).
 
 **Gagaclaw** is a bridge layer that connects messaging platforms (Telegram, CLI) to [Antigravity IDE](https://www.antigravity.so), turning it into a remotely controllable AI agent.
 
@@ -24,7 +24,7 @@ It intercepts Antigravity's internal communication via Chrome DevTools Protocol 
 
 ## Requirements
 
-- Windows 10/11 or Linux (Ubuntu 20.04+, Debian 11+, etc.)
+- Windows 10/11, Linux (Ubuntu 20.04+, Debian 11+, etc.), or macOS
 - [Node.js](https://nodejs.org/) 18+
 - [Antigravity IDE](https://www.antigravity.so)
 - A Telegram bot token (from [@BotFather](https://t.me/BotFather))
@@ -476,7 +476,7 @@ Step 9 — Done:
 > **The remote controller for your Antigravity.**
 > （你的專屬 Antigravity 遠端遙控器）
 
-> 支援 **Windows** 和 **Linux**（含 Docker），搭配 [Antigravity IDE](https://www.antigravity.so) 使用。
+> 支援 **Windows**、**Linux** 和 **macOS**（含 Docker），搭配 [Antigravity IDE](https://www.antigravity.so) 使用。
 
 **Gagaclaw** 是一個橋接層，將通訊平台（Telegram、CLI）連接到 [Antigravity IDE](https://www.antigravity.so)，讓它變成一個可遠端控制的 AI 代理人。
 
@@ -494,7 +494,7 @@ Step 9 — Done:
 
 ## 系統需求
 
-- Windows 10/11 或 Linux（Ubuntu 20.04+、Debian 11+ 等）
+- Windows 10/11、Linux（Ubuntu 20.04+、Debian 11+ 等）或 macOS
 - [Node.js](https://nodejs.org/) 18+
 - [Antigravity IDE](https://www.antigravity.so)
 - Telegram 機器人 Token（從 [@BotFather](https://t.me/BotFather) 取得）
