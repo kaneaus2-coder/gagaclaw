@@ -335,25 +335,74 @@ function readAuthFromDisk(log) {
     return null;
 }
 
+async function findLsHttpsPort(pid, log) {
+    let ports = [];
+    try {
+        if (process.platform === 'win32') {
+            const out = execSync(`powershell -NoProfile -Command "Get-NetTCPConnection -OwningProcess ${pid} -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty LocalPort"`,
+                { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000 }).trim();
+            ports = out.split(/\s+/).map(Number).filter(p => p > 0);
+        } else {
+            const out = execSync(`ss -tlnp 2>/dev/null | grep 'pid=${pid}' | awk '{print $4}' | grep -oP '\\d+$'`,
+                { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000 }).trim();
+            ports = out.split(/\s+/).map(Number).filter(p => p > 0);
+        }
+    } catch { }
+    if (ports.length === 0) return null;
+    log('debug', `Auth: language_server PID ${pid} listens on: ${ports.join(', ')}`);
+    // Try HTTPS on each port concurrently — the API port uses HTTPS
+    const checks = ports.map(port => new Promise(resolve => {
+        const req = https.get(`https://127.0.0.1:${port}/`, { agent: tlsAgent, timeout: 1500 }, res => {
+            res.resume();
+            resolve(port);
+        });
+        req.on('error', () => resolve(null));
+        req.on('timeout', () => { req.destroy(); resolve(null); });
+    }));
+    const results = await Promise.all(checks);
+    const found = results.find(p => p !== null);
+    if (found) log('info', `Auth: HTTPS API port ${found} (from PID ${pid})`);
+    return found ? String(found) : null;
+}
+
 async function captureAuth(browser, page, logger) {
     const log = logger || (() => {});
 
-    let osCsrfToken = null, osLsPort = null;
+    let osCsrfToken = null, osLsPort = null, osPid = null;
     try {
         let cmd;
         if (process.platform === 'win32') {
-            cmd = `powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \\"Name like '%language_server%.exe'\\" | Select-Object -ExpandProperty CommandLine"`;
+            cmd = `powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \\"Name like '%language_server%.exe'\\" | Select-Object ProcessId, CommandLine | ConvertTo-Csv -NoTypeInformation"`;
         } else {
             cmd = `ps aux | grep language_server | grep -v grep`;
         }
-        const out = execSync(cmd, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 2000 }).trim();
+        const out = execSync(cmd, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000 }).trim();
         const csrfMatch = out.match(/--csrf_token\s+([a-f0-9\-]{36})/i);
-        const portMatch = out.match(/--extension_server_port\s+(\d+)/i);
-        if (csrfMatch && portMatch) {
-            osCsrfToken = csrfMatch[1]; osLsPort = portMatch[1];
-            log('info', 'Auth: csrf+port from OS command line');
+        if (csrfMatch) osCsrfToken = csrfMatch[1];
+        // Extract PID
+        if (process.platform === 'win32') {
+            const pidMatch = out.match(/"(\d+)"/);
+            if (pidMatch) osPid = pidMatch[1];
+        } else {
+            const pidMatch = out.match(/\S+\s+(\d+)/);
+            if (pidMatch) osPid = pidMatch[1];
         }
+        if (osCsrfToken) log('info', 'Auth: csrf from OS command line');
     } catch { }
+
+    // Find the real HTTPS API port via PID
+    if (osPid) osLsPort = await findLsHttpsPort(osPid, log);
+    // Fallback: try --extension_server_port (may not be the HTTPS port)
+    if (!osLsPort) {
+        try {
+            const cmd = process.platform === 'win32'
+                ? `powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \\"Name like '%language_server%.exe'\\" | Select-Object -ExpandProperty CommandLine"`
+                : `ps aux | grep language_server | grep -v grep`;
+            const out = execSync(cmd, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 2000 }).trim();
+            const portMatch = out.match(/--extension_server_port\s+(\d+)/i);
+            if (portMatch) osLsPort = portMatch[1];
+        } catch { }
+    }
 
     // Layer 1: Read apiKey from disk (state.vscdb) + csrf from OS — instant, no waiting
     if (osCsrfToken && osLsPort) {
