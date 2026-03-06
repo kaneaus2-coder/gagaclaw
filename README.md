@@ -163,7 +163,7 @@ This project is provided **for research and educational purposes only**.
 - **No Guarantee on AI Results:** AI-generated outputs may contain errors, inaccuracies, or unexpected behavior.
 - **Risk of Data Loss & System Damage:** The AI has the ability to execute commands on your machine. The author makes no warranties and assumes no responsibility for any accidental data deletion, broken environments, or system modifications caused by AI operation errors (especially when YOLO mode is enabled).
 - **Security & Privacy Risks:** The AI has access to your local filesystem. It may inadvertently read or transmit sensitive information, credentials, or private data to external AI models. Do not use this tool with highly confidential data without strict oversight.
-- **Third-Party Costs:** This tool utilizes external APIs (e.g., Groq, Gemini, Claude, OpenAI). Users are solely responsible for any API usage charges or associated costs incurred.
+- **Uncontrolled Actions & Financial Risk:** The AI agents have the ability to autonomously invoke external services, APIs, and tools — including but not limited to cloud APIs (Groq, Gemini, Claude, OpenAI), online purchases, subscription sign-ups, and payment transactions. Users are solely responsible for any charges, fees, or financial consequences resulting from AI-initiated actions.
 - **Account Suspension Risk:** Using automated tools or bots may violate the terms of service of certain platforms, leading to the risk of your accounts (e.g., Google, Telegram) being suspended or banned.
 
 **Use at your own risk.**
@@ -357,7 +357,7 @@ gagaclaw/
 - **不保證 AI 結果：** AI 產生的輸出可能包含錯誤、不準確或非預期的行為。
 - **資料遺失與系統損壞風險：** AI 具有在您機器上執行指令的能力。對於 AI 操作錯誤（特別是在啟用 YOLO 自動核准模式下）所導致的任何誤刪資料、環境破壞或系統變更，作者不提供任何形式的保證，亦不承擔任何連帶責任。
 - **資安與隱私風險：** AI 可存取您的本機檔案系統，可能會不慎讀取或將敏感資訊、帳號密碼或私人數據傳輸給外部 AI 模型。在沒有嚴格監控的情況下，請勿將本工具用於處理高機密資料。
-- **第三方 API 費用：** 本工具會呼叫外部 API（如 Groq、Gemini、Claude、OpenAI）。使用者須自行承擔因 AI 呼叫所產生的任何 API 費用或相關成本。
+- **不可控行為與財務風險：** AI 代理具備自主呼叫外部服務、API 及工具的能力 — 包括但不限於雲端 API（Groq、Gemini、Claude、OpenAI）、線上購物、訂閱服務及付款交易。使用者須自行承擔因 AI 自主操作所產生的任何費用、扣款或財務後果。
 - **帳號停權風險：** 使用自動化工具或機器人可能違反部分平台的服務條款，存在導致您的帳號（例如 Google、Telegram）被鎖定或封禁的風險。
 
 **使用風險自負。**
