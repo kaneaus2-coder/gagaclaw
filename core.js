@@ -163,7 +163,7 @@ function nodeStreamFetch(port, pathName, body, csrfToken, onFrame, onEnd, host) 
 function parseStreamFrame(jsonStr) {
     try {
         const obj = JSON.parse(jsonStr);
-        const info = { thinking: [], response: [], toolCalls: [], trajectoryId: null, stepIndex: null, turnDone: false, newStepStarted: false, permissionWait: null, permissionPath: null, permissionCmd: null, serverError: null };
+        const info = { thinking: [], response: [], toolCalls: [], trajectoryId: null, stepIndex: null, turnDone: false, newStepStarted: false, permissionWait: null, permissionPath: null, permissionCmd: null, permStepType: null, serverError: null };
         walk(obj, [], info);
         const diffs = obj?.diff?.fieldDiffs;
         if (diffs && diffs.length === 1 && diffs[0].fieldNumber === 8) {
@@ -255,10 +255,8 @@ function walk(node, fieldStack, info) {
                 } catch {}
             }
         }
-        // Guard: stepType must be non-null to confirm this is a real step permission request.
-        // When stepType is null, the enumValue:9 likely comes from a nested browser state update
-        // (e.g. click_feedback screenshot), not from the step's own WAITING status.
-        if (hasStatus9 && stepType !== null && !info.permissionWait) {
+        if (stepType !== null) info.permStepType = stepType;
+        if (hasStatus9 && !info.permissionWait) {
             // Determine interaction type: run_command and mcp by stepType, file by URI presence, else browser
             if (stepType === 21) info.permissionWait = 'run_command';        // RUN_COMMAND
             else if (stepType === 38) info.permissionWait = 'mcp';           // MCP_TOOL
@@ -582,6 +580,7 @@ class Session extends EventEmitter {
         // Stream state
         this._latestTrajectoryId = null;
         this._latestStepIndex = null;
+        this._stepTypeMap = new Map();  // stepIndex -> stepType (persists across diffs)
         this._lastThinking = '';
         this._lastResponse = '';
         this._lastSeenToolCall = null;
@@ -742,12 +741,25 @@ class Session extends EventEmitter {
             this._lastSeenToolCall = tc;
             this.emit('toolCall', tc);
         }
+        // Maintain stepType map: remember stepType per stepIndex across diffs
+        if (info.permStepType !== null && info.stepIndex !== null) {
+            this._stepTypeMap.set(info.stepIndex, info.permStepType);
+        }
         // Permission: triggered by WAITING status (enumValue:9)
-        // Type is determined by CortexStepType enum (f1) in the same node
+        // Resolve stepType from map if not in current diff (protobuf only sends changed fields)
         if (info.permissionWait && !this._pendingToolCall) {
             const stepIdx = info.stepIndex !== null ? info.stepIndex : this._latestStepIndex;
+            const resolvedType = info.permStepType ?? this._stepTypeMap.get(stepIdx) ?? null;
+            if (resolvedType === null) {
+                pktWrite(`PERM_SKIP stepIndex=${stepIdx} (no stepType in diff or map — likely false positive)`);
+            } else {
             const trajId = info.trajectoryId || this._latestTrajectoryId;
             const lastTc = this._lastSeenToolCall || {};
+            // Re-resolve permissionWait type using the cached stepType
+            if (resolvedType === 21) info.permissionWait = 'run_command';
+            else if (resolvedType === 38) info.permissionWait = 'mcp';
+            else if (info.permissionPath) info.permissionWait = 'file';
+            else info.permissionWait = 'browser';
             const perm = {
                 type: info.permissionWait,
                 contextTool: lastTc,
@@ -760,6 +772,7 @@ class Session extends EventEmitter {
             pktWrite(`PERM_DETECT type=${info.permissionWait} stepIndex=${stepIdx} trajId=${trajId} cmd=${info.permissionCmd} path=${info.permissionPath}`);
             this._emitPermission(perm);
             return;
+            }
         }
         // New step → cancel turnDone debounce + reset delta tracking
         if (info.newStepStarted && this._turnDoneTimer) {
