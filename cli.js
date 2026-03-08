@@ -227,7 +227,7 @@ async function main() {
                 if (process.platform === 'win32') {
                     try { require('child_process').execSync(`taskkill /IM ${exeName} /F`, { stdio: 'ignore' }); } catch { }
                 } else {
-                    try { require('child_process').execSync(`pkill -f ${exeName.replace(/\.exe$/i, '')}`, { stdio: 'ignore' }); } catch { }
+                    try { require('child_process').execSync(`pkill -9 -f ${exeName.replace(/\.exe$/i, '')}`, { stdio: 'ignore' }); } catch { }
                 }
                 process.exit(42);
             } else {
