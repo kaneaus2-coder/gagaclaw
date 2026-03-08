@@ -255,7 +255,10 @@ function walk(node, fieldStack, info) {
                 } catch {}
             }
         }
-        if (hasStatus9 && !info.permissionWait) {
+        // Guard: stepType must be non-null to confirm this is a real step permission request.
+        // When stepType is null, the enumValue:9 likely comes from a nested browser state update
+        // (e.g. click_feedback screenshot), not from the step's own WAITING status.
+        if (hasStatus9 && stepType !== null && !info.permissionWait) {
             // Determine interaction type: run_command and mcp by stepType, file by URI presence, else browser
             if (stepType === 21) info.permissionWait = 'run_command';        // RUN_COMMAND
             else if (stepType === 38) info.permissionWait = 'mcp';           // MCP_TOOL
