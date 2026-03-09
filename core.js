@@ -830,9 +830,10 @@ class Session extends EventEmitter {
             : perm.type === 'mcp' ? `mcp: ${perm.contextTool?.toolName || '(tool)'}`
             : `${perm.type}`;
         this.emit('yoloApprove', desc);
-        await this.approvePermission(perm, true, {
+        const ok = await this.approvePermission(perm, true, {
             scope: 'PERMISSION_SCOPE_CONVERSATION',
         });
+        if (!ok) this.emit('yoloError', desc);
     }
 
     async approvePermission(perm, allowed, opts = {}) {
@@ -884,6 +885,7 @@ class Session extends EventEmitter {
         if (res.status !== 200) {
             if (res.body && res.body.includes('not registered')) {
                 pktWrite(`APPROVE_GIVE_UP not registered after retries`);
+                this.emit('error', `Approve give up (not registered after retries)`);
             } else {
                 this.emit('error', `Interaction failed (${res.status}): ${res.body.slice(0, 80)}`);
             }
@@ -894,6 +896,7 @@ class Session extends EventEmitter {
         this._lastResponse = '';
         this._pendingToolCall = null;
         this.emit('permissionResolved');
+        return res.status === 200;
     }
 
     _handleStreamEnd() {

@@ -467,6 +467,11 @@ async function main() {
         tgSendTemp(activeChatId, `⚡ YOLO: ${escapeHtml(desc)}`, HTML).catch(() => { });
     });
 
+    session.on('yoloError', (desc) => {
+        if (!activeChatId) return;
+        tgSend(activeChatId, `❌ YOLO 失敗: ${escapeHtml(desc)}`, HTML).catch(() => { });
+    });
+
     session.on('newStep', () => {
         if (!activeChatId) return;
         const st = getChat(activeChatId);
