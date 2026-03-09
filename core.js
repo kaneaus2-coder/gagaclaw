@@ -755,11 +755,13 @@ class Session extends EventEmitter {
             } else {
             const trajId = info.trajectoryId || this._latestTrajectoryId;
             const lastTc = this._lastSeenToolCall || {};
-            // Re-resolve permissionWait using cached stepType
-            if (resolvedType === 21) info.permissionWait = 'run_command';
-            else if (resolvedType === 38) info.permissionWait = 'mcp';
-            else if (info.permissionPath) info.permissionWait = 'file';
-            else info.permissionWait = 'browser';
+            // Re-resolve permissionWait using cached stepType only when walk() fell back to browser
+            if (info.permissionWait === 'browser') {
+                if (resolvedType === 21) info.permissionWait = 'run_command';
+                else if (resolvedType === 38) info.permissionWait = 'mcp';
+                else if (info.permissionPath) info.permissionWait = 'file';
+                // else: stays 'browser'
+            }
             const perm = {
                 type: info.permissionWait,
                 contextTool: lastTc,
