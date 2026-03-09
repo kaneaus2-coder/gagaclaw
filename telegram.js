@@ -7,7 +7,8 @@
 const https = require('https');
 const fs = require('fs');
 const path = require('path');
-const { createSession, MODELS, MODEL_BY_ID, MODES, loadConfig, getCurrentWorkspace, listWorkspaces, switchWorkspace, splitText, LOCAL_VERSION, checkUpdate } = require('./core');
+const puppeteer = require('puppeteer-core');
+const { createSession, MODELS, MODEL_BY_ID, MODES, loadConfig, getCurrentWorkspace, listWorkspaces, switchWorkspace, splitText, LOCAL_VERSION, checkUpdate, checkPort } = require('./core');
 const cron = require('./cronjob');
 
 // ─── Config ──────────────────────────────────────────────────────────────────
@@ -243,6 +244,62 @@ function coreLogger(level, msg) {
     flog(`[${level}] ${msg}`);
     const prefix = level === 'error' ? '✗' : level === 'info' ? '✓' : 'ℹ';
     console.log(`[${prefix}] ${msg}`);
+}
+
+// ─── IDE sync helpers ────────────────────────────────────────────────────────
+async function getIdeChatPage() {
+    const cdpPorts = cfg.defaults?.cdpPorts || [9229];
+    const cdpHost = cfg.defaults?.cdpHost || '127.0.0.1';
+
+    let cdpPort = null;
+    for (const p of cdpPorts) {
+        if (await checkPort(p, cdpHost)) { cdpPort = p; break; }
+    }
+    if (!cdpPort) throw new Error(`找不到 ${APP_NAME} 的 CDP port`);
+
+    const browser = await puppeteer.connect({
+        browserURL: `http://${cdpHost}:${cdpPort}`,
+        defaultViewport: null,
+    });
+
+    let page = null;
+    for (const p of await browser.pages()) {
+        const title = await p.title().catch(() => '');
+        if (!title.includes(APP_NAME) || title === 'Manager' || title === 'Launchpad') continue;
+        try {
+            const ok = await p.evaluate(() => {
+                const hasAskAnything = Array.from(document.querySelectorAll('p, div, span')).some(el =>
+                    el.innerText && el.innerText.includes('Ask anything')
+                );
+                return hasAskAnything || !!document.querySelector('[contenteditable="true"]');
+            });
+            if (ok) { page = p; break; }
+        } catch {}
+    }
+
+    if (!page) { browser.disconnect(); throw new Error('找不到聊天視窗'); }
+    return { browser, page };
+}
+
+async function navigateToCascade(page, targetCascadeId) {
+    if (!targetCascadeId) return false;
+
+    await page.evaluate(() => {
+        const btn = document.querySelector('a[data-tooltip-id="new-conversation-tooltip"]');
+        if (btn) btn.click();
+    });
+    await new Promise(r => setTimeout(r, 1200));
+
+    const found = await page.evaluate((cid) => {
+        const svg = document.querySelector(`svg[data-tooltip-id="${cid}-delete-conversation"]`);
+        if (!svg) return false;
+        let el = svg;
+        while (el && el.tagName !== 'BUTTON') el = el.parentElement;
+        if (el) { el.click(); return true; }
+        return false;
+    }, targetCascadeId);
+
+    return found;
 }
 
 // ─── Main ───────────────────────────────────────────────────────────────────
@@ -638,6 +695,7 @@ async function main() {
                     `/yolo [on|off] — Auto-approve`,
                     `/ws [name] — Switch workspace`,
                     `/cron — Cron job management`,
+                    `/sync — Sync IDE to current conversation`,
                     `/restart — Warm restart`,
                     `/restart cold — Cold restart (kill app)`,
                     `/help — Show this help`,
@@ -848,6 +906,33 @@ async function main() {
                     }
                 } else {
                     await tgSend(chatId, '❌ Usage: /cron · /cron on &lt;id&gt; · /cron off &lt;id&gt;', HTML);
+                }
+                return true;
+            }
+
+            case '/sync': {
+                if (!session.cascadeId) {
+                    await tgSend(chatId, '⚠️ 目前沒有活動對話');
+                    return true;
+                }
+                const syncMsgId = await tgSend(chatId, '⟳ IDE 同步中…');
+                let syncBrowser = null;
+                try {
+                    const ide = await getIdeChatPage();
+                    syncBrowser = ide.browser;
+                    const found = await navigateToCascade(ide.page, session.cascadeId);
+                    const shortId = `${session.cascadeId.substring(0, 8)}...`;
+                    const reply = found
+                        ? `✅ IDE 已跳到目前對話 <code>${escapeHtml(shortId)}</code>`
+                        : `⚠️ 找不到此 cascade（<code>${escapeHtml(shortId)}</code>）\n請先送出一則訊息後再 /sync`;
+                    if (syncMsgId) await tgEdit(chatId, syncMsgId, reply, HTML);
+                    else await tgSend(chatId, reply, HTML);
+                } catch (e) {
+                    const reply = `❌ /sync 失敗\n<code>${escapeHtml(e.message || String(e))}</code>`;
+                    if (syncMsgId) await tgEdit(chatId, syncMsgId, reply, HTML);
+                    else await tgSend(chatId, reply, HTML);
+                } finally {
+                    if (syncBrowser) try { syncBrowser.disconnect(); } catch {}
                 }
                 return true;
             }
