@@ -257,6 +257,11 @@ function walk(node, fieldStack, info) {
         }
         if (stepType !== null) info.permStepType = stepType;
         if (hasStatus9 && !info.permissionWait) {
+            // Use updateIndex from steps array if walk() didn't find stepIndex in metadata
+            if (info._updateIndex !== undefined && info.stepIndex === null) {
+                info.stepIndex = info._updateIndex;
+                pktWrite(`STEP_IDX_FROM_WAITING value=${info._updateIndex}`);
+            }
             // Determine interaction type: run_command and mcp by stepType, file by URI presence, else browser
             if (stepType === 21) info.permissionWait = 'run_command';        // RUN_COMMAND
             else if (stepType === 38) info.permissionWait = 'mcp';           // MCP_TOOL
@@ -287,7 +292,20 @@ function walk(node, fieldStack, info) {
         }
     }
 
+    // Handle updateRepeated with updateIndices: track which array index we're processing
+    if (node.updateRepeated?.updateValues && node.updateRepeated.updateIndices) {
+        const vals = node.updateRepeated.updateValues;
+        const idxs = node.updateRepeated.updateIndices;
+        for (let i = 0; i < vals.length; i++) {
+            const prev = info._updateIndex;
+            info._updateIndex = idxs[i];
+            walk(vals[i], newStack, info);
+            info._updateIndex = prev;
+        }
+    }
+
     for (const key of Object.keys(node)) {
+        if (key === 'updateRepeated' && node.updateRepeated?.updateIndices) continue; // already handled above
         const val = node[key];
         if (val && typeof val === 'object') walk(val, newStack, info);
     }
