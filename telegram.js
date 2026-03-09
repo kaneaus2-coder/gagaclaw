@@ -274,7 +274,7 @@ async function getIdeChatPage() {
                 return hasAskAnything || !!document.querySelector('[contenteditable="true"]');
             });
             if (ok) { page = p; break; }
-        } catch {}
+        } catch { }
     }
 
     if (!page) { browser.disconnect(); throw new Error('找不到聊天視窗'); }
@@ -937,7 +937,7 @@ async function main() {
                     if (syncMsgId) await tgEdit(chatId, syncMsgId, reply, HTML);
                     else await tgSend(chatId, reply, HTML);
                 } finally {
-                    if (syncBrowser) try { syncBrowser.disconnect(); } catch {}
+                    if (syncBrowser) try { syncBrowser.disconnect(); } catch { }
                 }
                 return true;
             }
@@ -953,10 +953,12 @@ async function main() {
                     } else {
                         try { require('child_process').execSync(`pkill -9 -f ${exeName.replace(/\.exe$/i, '')}`, { stdio: 'ignore' }); } catch { }
                     }
+                    await tgRequest('getUpdates', { offset: updateOffset, timeout: 0 }); // ACK updates before exit
                     process.exit(42);
                 } else if (sub === 'warm' || sub === 'hot') {
                     await tgSend(chatId, '🔄 Warm restart...');
                     session.destroy();
+                    await tgRequest('getUpdates', { offset: updateOffset, timeout: 0 }); // ACK updates before exit
                     process.exit(42);
                 } else if (!arg) {
                     await tgSendButtons(chatId, '🔄 Choose restart type:', [[
@@ -966,6 +968,7 @@ async function main() {
                 } else {
                     await tgSend(chatId, '🔄 Warm restart...');
                     session.destroy();
+                    await tgRequest('getUpdates', { offset: updateOffset, timeout: 0 }); // ACK updates before exit
                     process.exit(42);
                 }
                 return true;
@@ -1141,11 +1144,13 @@ async function main() {
                                 } else {
                                     try { require('child_process').execSync(`pkill -9 -f ${exeName.replace(/\.exe$/i, '')}`, { stdio: 'ignore' }); } catch { }
                                 }
+                                await tgRequest('getUpdates', { offset: updateOffset, timeout: 0 }); // ACK updates before exit
                                 process.exit(42);
                             } else {
                                 await tgAnswer(query.id);
                                 await tgEdit(chatId, msgId, '🔄 Warm restart...');
                                 session.destroy();
+                                await tgRequest('getUpdates', { offset: updateOffset, timeout: 0 }); // ACK updates before exit
                                 process.exit(42);
                             }
                         } else if (data === 'cmd_noop') {
@@ -1223,6 +1228,15 @@ async function main() {
         if (anyBusy || _cronActive) return;
         processCronQueue();
     }, 30000);
+
+    // ── Graceful shutdown (Ctrl+C / kill) — flush update queue ──────────
+    const gracefulExit = async (sig) => {
+        console.log(`[⏻] ${sig} received, flushing Telegram updates…`);
+        try { await tgRequest('getUpdates', { offset: updateOffset, timeout: 0 }); } catch { }
+        process.exit(0);
+    };
+    process.on('SIGINT', () => gracefulExit('SIGINT'));
+    process.on('SIGTERM', () => gracefulExit('SIGTERM'));
 
     // Start polling
     poll();
