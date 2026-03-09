@@ -580,7 +580,7 @@ class Session extends EventEmitter {
         // Stream state
         this._latestTrajectoryId = null;
         this._latestStepIndex = null;
-        this._stepTypeMap = new Map();  // stepIndex -> stepType (persists across diffs)
+        this._stepMetaMap = new Map();  // stepIndex -> {type, cmd, path} (persists across diffs)
         this._lastThinking = '';
         this._lastResponse = '';
         this._lastSeenToolCall = null;
@@ -741,30 +741,38 @@ class Session extends EventEmitter {
             this._lastSeenToolCall = tc;
             this.emit('toolCall', tc);
         }
-        // Maintain stepType map: remember stepType per stepIndex across diffs
-        if (info.permStepType !== null && info.stepIndex !== null) {
-            this._stepTypeMap.set(info.stepIndex, info.permStepType);
+        // Maintain step metadata map: remember stepType/cmd/path per stepIndex across diffs
+        if (info.stepIndex !== null) {
+            const prev = this._stepMetaMap.get(info.stepIndex) || {};
+            this._stepMetaMap.set(info.stepIndex, {
+                type: info.permStepType ?? prev.type ?? null,
+                cmd: info.permissionCmd ?? prev.cmd ?? null,
+                path: info.permissionPath ?? prev.path ?? null,
+            });
         }
         // Permission: triggered by WAITING status (enumValue:9)
         // Resolve stepType from map if not in current diff (protobuf only sends changed fields)
         if (info.permissionWait && !this._pendingToolCall) {
             const stepIdx = info.stepIndex !== null ? info.stepIndex : this._latestStepIndex;
-            const resolvedType = info.permStepType ?? this._stepTypeMap.get(stepIdx) ?? null;
+            const meta = this._stepMetaMap.get(stepIdx) || {};
+            const resolvedType = info.permStepType ?? meta.type ?? null;
             if (resolvedType === null) {
                 pktWrite(`PERM_SKIP stepIndex=${stepIdx} (no stepType in diff or map — likely false positive)`);
             } else {
             const trajId = info.trajectoryId || this._latestTrajectoryId;
             const lastTc = this._lastSeenToolCall || {};
-            // Re-resolve permissionWait type using the cached stepType
-            if (resolvedType === 21) info.permissionWait = 'run_command';
-            else if (resolvedType === 38) info.permissionWait = 'mcp';
-            else if (info.permissionPath) info.permissionWait = 'file';
-            else info.permissionWait = 'browser';
+            // Re-resolve permissionWait using cached stepType only when walk() fell back to browser
+            if (info.permissionWait === 'browser') {
+                if (resolvedType === 21) info.permissionWait = 'run_command';
+                else if (resolvedType === 38) info.permissionWait = 'mcp';
+                else if (info.permissionPath) info.permissionWait = 'file';
+                // else: stays 'browser'
+            }
             const perm = {
                 type: info.permissionWait,
                 contextTool: lastTc,
-                permissionPath: info.permissionPath,
-                CommandLine: info.permissionCmd || lastTc.CommandLine,
+                permissionPath: info.permissionPath || meta.path || null,
+                CommandLine: info.permissionCmd || meta.cmd || lastTc.CommandLine,
                 _trajectoryId: trajId,
                 _stepIndex: stepIdx,
             };
@@ -865,7 +873,7 @@ class Session extends EventEmitter {
         // Retry on "not registered" — race condition: server hasn't registered the input handler yet
         if (res.status !== 200 && res.body && res.body.includes('not registered')) {
             for (let retry = 1; retry <= 5; retry++) {
-                const delay = 200 + retry * 300;
+                const delay = retry * 500;
                 pktWrite(`APPROVE_RETRY ${retry}/5 in ${delay}ms (not registered)`);
                 await new Promise(r => setTimeout(r, delay));
                 res = await nodePost(this.auth.lsPort, 'HandleCascadeUserInteraction', interactionPayload, this.auth.csrfToken, this.auth.cdpHost);
