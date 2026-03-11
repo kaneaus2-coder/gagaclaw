@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.3.1 (2026-03-12)
+
+### Bug Fixes
+- **Premature turnDone** — Thinking message disappeared immediately because `USER_INPUT(DONE)` triggered turnDone. Now requires new content steps after send point and last step must not be `USER_INPUT`.
+- **Duplicate YOLO approve** — Same WAITING step approved multiple times because server hadn't updated status yet. Added `_pollApprovedSteps` tracking to skip already-approved steps.
+- **write_to_file path=null** — Added `FilePath`/`filePath` to permission path extraction, fixing empty `absolutePathUri` in approve payload.
+- **"interaction channel is full" (500)** — Caused by duplicate approves flooding the server. Fixed by the approved-steps tracking above.
+
 ## v1.3.0 (2026-03-12)
 
 ### Bug Fixes

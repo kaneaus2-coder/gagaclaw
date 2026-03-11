@@ -622,6 +622,7 @@ class Session extends EventEmitter {
         this._pollLastStatus = null;
         this._pollIdleCount = 0;  // consecutive polls with no change
         this._pollSendStepCount = 0;  // step count at send() time — ignore older steps
+        this._pollApprovedSteps = new Set();  // step indices already approved — skip on next poll
 
         this._applyModel();
         this._applyMode();
@@ -1047,7 +1048,8 @@ class Session extends EventEmitter {
             const step = steps[si];
             const stepStatus = step.status || '';
             const stepType = step.type || '';
-            if (!stepStatus.includes('WAITING')) continue;
+            if (!stepStatus.includes('WAITING')) { this._pollApprovedSteps.delete(si); continue; }
+            if (this._pollApprovedSteps.has(si)) continue;  // already approved, skip
 
             let permType = 'browser';
             if (stepType.includes('RUN_COMMAND')) permType = 'run_command';
@@ -1059,7 +1061,7 @@ class Session extends EventEmitter {
             if (tc?.argumentsJson) {
                 try {
                     const args = JSON.parse(tc.argumentsJson);
-                    permPath = args.AbsolutePath || args.DirectoryPath || args.absolutePath || null;
+                    permPath = args.AbsolutePath || args.FilePath || args.DirectoryPath || args.absolutePath || args.filePath || null;
                     permCmd = args.CommandLine || args.command || null;
                 } catch {}
             }
@@ -1087,6 +1089,7 @@ class Session extends EventEmitter {
                 this._pendingPermTimer = null;
                 if (this._pendingToolCall === perm) {
                     pktWrite(`PERM_DEBOUNCE_FIRE step=${si}`);
+                    this._pollApprovedSteps.add(si);
                     this._emitPermission(perm);
                 } else {
                     pktWrite(`PERM_DEBOUNCE_SKIP step=${si} (superseded)`);
@@ -1136,11 +1139,15 @@ class Session extends EventEmitter {
         }
 
         // ── Turn done detection ──
-        const lastStepStatus = steps[numSteps - 1].status || '';
+        const lastStep = steps[numSteps - 1];
+        const lastStepStatus = lastStep.status || '';
+        const lastStepType = lastStep.type || '';
         const runStatus = data.status || '';
+        // Must have new steps after send AND last step must not be USER_INPUT
+        const hasNewContentSteps = numSteps > this._pollSendStepCount + 1 && !lastStepType.includes('USER_INPUT');
 
-        // By cascade run status change
-        if (this._pollLastStatus && this._pollLastStatus !== runStatus) {
+        // By cascade run status change — only if we already got content steps
+        if (hasNewContentSteps && this._pollLastStatus && this._pollLastStatus !== runStatus) {
             if (runStatus.includes('IDLE') || runStatus.includes('DONE') || runStatus.includes('COMPLETED')) {
                 if (this._awaitingResponse && !this._pendingToolCall) {
                     if (this._turnDoneTimer) clearTimeout(this._turnDoneTimer);
@@ -1157,10 +1164,10 @@ class Session extends EventEmitter {
         }
         this._pollLastStatus = runStatus;
 
-        // By idle count — no changes for several consecutive polls + last step DONE
+        // By idle count — only if we have content steps after send, last step is DONE and not USER_INPUT
         if (this._awaitingResponse && !this._pendingToolCall) {
             this._pollIdleCount++;
-            if (this._pollIdleCount >= 4 && lastStepStatus.includes('DONE')) {
+            if (this._pollIdleCount >= 6 && hasNewContentSteps && lastStepStatus.includes('DONE')) {
                 if (!this._turnDoneTimer) {
                     this._turnDoneTimer = setTimeout(() => {
                         this._turnDoneTimer = null;
@@ -1196,6 +1203,7 @@ class Session extends EventEmitter {
         this._pollLastResponseLen = 0;
         this._pollIdleCount = 0;
         this._pollSendStepCount = this._pollLastNumSteps;  // only look at steps AFTER this point
+        this._pollApprovedSteps.clear();
         this._pendingToolCall = null;
         this._awaitingResponse = true;
         if (this._pollingMode) this._adjustPollRate();
