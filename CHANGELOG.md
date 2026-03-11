@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.3.0 (2026-03-12)
+
+### Bug Fixes
+- **Polling response lag** — Fixed bot answering with previous turn's response. Polling now tracks step count at `send()` time and only processes steps after that point.
+- **Slow turnDone detection** — Reduced idle threshold from 10→4 polls and debounce from 2s→1s. Total reaction time from ~7s to ~3s.
+
 ## v1.2.0 (2026-03-11)
 
 ### Breaking: Antigravity 1.20.5+ Compatibility
