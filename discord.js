@@ -111,6 +111,21 @@ function stripOwnMention(text, botId) {
         .trim();
 }
 
+function canHandleCommandMessage(message, client) {
+    if (!message || !client.user) return false;
+    if (message.author.bot) return false;
+    if (!isAllowedChannel(message.channel)) return false;
+    if (!isAllowedUser(message.author.id)) return false;
+
+    const isDm = message.channel.type === ChannelType.DM;
+    if (isDm) return true;
+    if (!REQUIRE_MENTION_IN_GUILDS) return true;
+
+    const mentioned = message.mentions?.has(client.user) || false;
+    const replied = isReplyToBot(message, client);
+    return mentioned || replied;
+}
+
 function canHandleConversationMessage(message, client) {
     if (!message || !client.user) return false;
     if (message.author.id === client.user.id) return false;
@@ -596,6 +611,7 @@ async function main() {
             await sendMessage(message.channel.id, [
                 `**${APP_NAME} Discord Bot v${LOCAL_VERSION}**`,
                 `\`${PREFIX}new\` — New conversation`,
+                `\`${PREFIX}restart [cold]\` — Restart bot`,
                 `\`${PREFIX}stop\` — Stop current turn`,
                 `\`${PREFIX}list\` — List conversations`,
                 `\`${PREFIX}switch N\` — Switch to conversation #N`,
@@ -607,7 +623,7 @@ async function main() {
                 `\`${PREFIX}yolo <on|off>\``,
                 `\`${PREFIX}usage\` — Model quota & usage`,
                 '',
-                'Guild channels require mention or reply by default.',
+                'Guild channels require mention or reply for both commands and chat by default.',
             ].join('\n'));
             return true;
 
@@ -618,6 +634,27 @@ async function main() {
             await ensureSession(state);
             await sendMessage(message.channel.id, `New conversation: ${state.session.cascadeId.slice(0, 8)}...`);
             return true;
+
+        case `${PREFIX}restart`: {
+            const sub = arg.toLowerCase();
+            if (state.session && state.busy) {
+                try { await state.session.stop(); } catch {}
+            }
+            await destroySession(state);
+            if (sub === 'cold') {
+                await sendMessage(message.channel.id, `Cold restart - kill ${APP_NAME} and restart...`);
+                const exeName = (cfg.app?.targetExecutables || ['Antigravity.exe'])[0];
+                if (process.platform === 'win32') {
+                    try { require('child_process').execSync(`taskkill /IM ${exeName} /F`, { stdio: 'ignore' }); } catch {}
+                } else {
+                    try { require('child_process').execSync(`pkill -9 -f ${exeName.replace(/\.exe$/i, '')}`, { stdio: 'ignore' }); } catch {}
+                }
+                process.exit(42);
+            }
+            await sendMessage(message.channel.id, 'Warm restart...');
+            process.exit(42);
+            return true;
+        }
 
         case `${PREFIX}stop`:
             session = session || await ensureSession(state);
@@ -767,7 +804,8 @@ async function main() {
         }
 
         default:
-            return false;
+            await sendMessage(message.channel.id, `Unknown command: ${cmd}. Use \`${PREFIX}help\`.`);
+            return true;
         }
     }
 
@@ -790,16 +828,20 @@ async function main() {
             if (!isAllowedChannel(message.channel)) return;
 
             const state = getState(message.channel.id);
+            const strippedContent = stripOwnMention(message.content, client.user.id);
+            const commandText = strippedContent.startsWith(PREFIX)
+                ? strippedContent
+                : (message.content.startsWith(PREFIX) ? message.content : '');
 
-            if (message.content.startsWith(PREFIX)) {
-                if (!isAllowedUser(message.author.id)) return;
-                const handled = await handleCommand(message, state, message.content);
+            if (commandText) {
+                if (!canHandleCommandMessage(message, client)) return;
+                const handled = await handleCommand(message, state, commandText);
                 if (handled) return;
             }
 
             if (!canHandleConversationMessage(message, client)) return;
 
-            const prompt = stripOwnMention(message.content, client.user.id);
+            const prompt = strippedContent;
             if (!prompt) return;
 
             if (state.busy) {
