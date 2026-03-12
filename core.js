@@ -802,8 +802,15 @@ class Session extends EventEmitter {
             this._isRunningRunStatus(prevStatus) &&
             this._isIdleRunStatus(status)
         ) {
-            pktWrite('TURN_DONE_FIRE reason=agent-state-status-idle');
-            this._finishTurn();
+            pktWrite('TURN_DONE_PENDING reason=agent-state-status-idle — doing final poll');
+            // Final poll to capture any remaining response text before finishing
+            this._pollOnce().then(() => {
+                pktWrite('TURN_DONE_FIRE reason=agent-state-status-idle (after final poll)');
+                this._finishTurn();
+            }).catch(() => {
+                pktWrite('TURN_DONE_FIRE reason=agent-state-status-idle (final poll failed)');
+                this._finishTurn();
+            });
         }
 
         this._lastAgentStatus = status;
