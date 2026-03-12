@@ -1488,7 +1488,7 @@ async function createSession(logger, opts = {}) {
 }
 
 // Create additional session using existing auth (for multi-cascade)
-async function createExtraSession(auth, cascadeId) {
+async function createExtraSession(auth, cascadeId, { autoOpen = true } = {}) {
     const session = new Session(auth);
     if (cascadeId) {
         session.cascadeId = cascadeId;
@@ -1497,7 +1497,7 @@ async function createExtraSession(auth, cascadeId) {
         if (!newId) throw new Error('Failed to start new cascade');
         session.cascadeId = newId;
     }
-    session.openStream();
+    if (autoOpen) session.openStream();
     return session;
 }
 

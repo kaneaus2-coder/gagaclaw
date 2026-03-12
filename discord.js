@@ -110,15 +110,17 @@ function canHandleConversationMessage(message, client) {
     if (!message || !client.user) return false;
     if (message.author.id === client.user.id) return false;
     if (!isAllowedChannel(message.channel)) return false;
-    if (!isAllowedUser(message.author.id)) return false;
 
     const mentioned = message.mentions?.has(client.user) || false;
     const replied = isReplyToBot(message, client);
 
+    // Bot authors bypass allowedUsers — only require mention/reply + allowBotMentions
     if (message.author.bot) {
         if (message.channel.type === ChannelType.DM) return false;
         return ALLOW_BOT_MENTIONS && (mentioned || replied);
     }
+
+    if (!isAllowedUser(message.author.id)) return false;
 
     const isDm = message.channel.type === ChannelType.DM;
     if (isDm) return true;
@@ -481,11 +483,12 @@ async function main() {
             state.sessionPromise = (async () => {
                 const map = loadSessionMap();
                 const savedCascadeId = map[state.channelId] || null;
-                const session = await createExtraSession(auth, savedCascadeId);
+                const session = await createExtraSession(auth, savedCascadeId, { autoOpen: false });
                 state.session = session;
                 map[state.channelId] = session.cascadeId;
                 saveSessionMap(map);
                 await bindSession(state, session);
+                session.openStream(); // open AFTER listeners are bound to catch transportMode
                 dlog(`[session] channel=${state.channelId} cascade=${session.cascadeId} resumed=${!!savedCascadeId}`);
                 return session;
             })().catch((err) => {
@@ -714,6 +717,7 @@ async function main() {
             if (ok) {
                 await sendMessage(message.channel.id, `Deleted: ${target.id.slice(0, 8)}…`);
                 if (target.id === session.cascadeId) {
+                    await destroySession(state);
                     const map = loadSessionMap();
                     delete map[state.channelId];
                     saveSessionMap(map);
