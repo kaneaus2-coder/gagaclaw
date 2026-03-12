@@ -45,8 +45,13 @@ const ALLOWED_CHANNELS = new Set((cfg.discord?.allowedChannels || []).map(String
 const ADMIN_CHANNEL_ID = cfg.discord?.adminChannelId || '';
 
 const SESSION_MAP_PATH = path.join(__dirname, 'discord_sessions.json');
-function loadSessionMap() { try { return JSON.parse(fs.readFileSync(SESSION_MAP_PATH, 'utf8')); } catch { return {}; } }
-function saveSessionMap(map) { fs.writeFileSync(SESSION_MAP_PATH, JSON.stringify(map, null, 2) + '\n'); }
+function _loadSessionMap() { try { return JSON.parse(fs.readFileSync(SESSION_MAP_PATH, 'utf8')); } catch { return {}; } }
+function _saveSessionMap(map) { fs.writeFileSync(SESSION_MAP_PATH, JSON.stringify(map, null, 2) + '\n'); }
+// Atomic read-modify-write: read → get saved value → return it (for resume lookup)
+function updateSessionMap(channelId) { return _loadSessionMap()[channelId] || null; }
+// Atomic read-modify-write: read → set → write (serialized per call)
+function writeSessionMap(channelId, cascadeId) { const m = _loadSessionMap(); m[channelId] = cascadeId; _saveSessionMap(m); }
+function deleteSessionMap(channelId) { const m = _loadSessionMap(); delete m[channelId]; _saveSessionMap(m); }
 
 if (!DISCORD_TOKEN) {
     console.error('No Discord token. Set discord.token in gagaclaw.json or DISCORD_TOKEN env.');
@@ -410,17 +415,10 @@ async function main() {
     }
 
     async function bindSession(state, session) {
+        // transportMode enforcement is in ensureSession (blocks until mode detected).
+        // This handler is for logging on reconnect only.
         session.on('transportMode', (mode) => {
             dlog(`[transport] channel=${state.channelId} mode=${mode}`);
-            if (mode === 'polling') {
-                sendMessage(state.channelId, `📡 Polling mode (Antigravity ≥1.20.5)`).catch(() => {});
-            } else {
-                const err = 'discord.js only supports polling mode (Antigravity ≥1.20.5). Streaming detected — destroying session.';
-                console.error(err);
-                dlog(err);
-                sendMessage(state.channelId, `❌ ${err}`).catch(() => {});
-                destroySession(state).catch(() => {});
-            }
         });
 
         session.on('thinking', (_delta, full) => {
@@ -481,15 +479,26 @@ async function main() {
         if (state.session) return state.session;
         if (!state.sessionPromise) {
             state.sessionPromise = (async () => {
-                const map = loadSessionMap();
-                const savedCascadeId = map[state.channelId] || null;
+                const savedCascadeId = updateSessionMap(state.channelId);
                 const session = await createExtraSession(auth, savedCascadeId, { autoOpen: false });
                 state.session = session;
-                map[state.channelId] = session.cascadeId;
-                saveSessionMap(map);
+                writeSessionMap(state.channelId, session.cascadeId);
                 await bindSession(state, session);
-                session.openStream(); // open AFTER listeners are bound to catch transportMode
-                dlog(`[session] channel=${state.channelId} cascade=${session.cascadeId} resumed=${!!savedCascadeId}`);
+                // Wait for transport mode detection before allowing sends
+                const mode = await new Promise((resolve, reject) => {
+                    const timeout = setTimeout(() => {
+                        session.removeListener('transportMode', onMode);
+                        reject(new Error('Transport mode detection timed out (5s)'));
+                    }, 5000);
+                    const onMode = (m) => { clearTimeout(timeout); resolve(m); };
+                    session.once('transportMode', onMode);
+                    session.openStream();
+                });
+                if (mode !== 'polling') {
+                    await destroySession(state);
+                    throw new Error('discord.js only supports polling mode (Antigravity ≥1.20.5). Streaming detected.');
+                }
+                dlog(`[session] channel=${state.channelId} cascade=${session.cascadeId} mode=${mode} resumed=${!!savedCascadeId}`);
                 return session;
             })().catch((err) => {
                 state.sessionPromise = null;
@@ -598,8 +607,7 @@ async function main() {
 
         case `${PREFIX}new`:
             await destroySession(state);
-            // Remove old mapping so ensureSession creates fresh
-            { const map = loadSessionMap(); delete map[state.channelId]; saveSessionMap(map); }
+            deleteSessionMap(state.channelId);
             await ensureSession(state);
             await sendMessage(message.channel.id, `New conversation: ${state.session.cascadeId.slice(0, 8)}...`);
             return true;
@@ -696,9 +704,7 @@ async function main() {
             }
             const target = list[num - 1];
             session.switchCascade(target.id);
-            const map = loadSessionMap();
-            map[state.channelId] = target.id;
-            saveSessionMap(map);
+            writeSessionMap(state.channelId, target.id);
             const ttl = (target.summary || '(untitled)').slice(0, 50);
             await sendMessage(message.channel.id, `Switched: ${target.id.slice(0, 8)}… — ${ttl}`);
             return true;
@@ -718,9 +724,7 @@ async function main() {
                 await sendMessage(message.channel.id, `Deleted: ${target.id.slice(0, 8)}…`);
                 if (target.id === session.cascadeId) {
                     await destroySession(state);
-                    const map = loadSessionMap();
-                    delete map[state.channelId];
-                    saveSessionMap(map);
+                    deleteSessionMap(state.channelId);
                     await sendMessage(message.channel.id, 'Current conversation deleted. Use `!new` or `!switch`.');
                 }
             } else {

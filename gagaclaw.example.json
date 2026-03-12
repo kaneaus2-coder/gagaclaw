@@ -4,6 +4,16 @@
         "allowedUsers": [0],
         "adminChatId": 0
     },
+    "discord": {
+        "token": "PASTE_YOUR_DISCORD_BOT_TOKEN_HERE",
+        "allowedUsers": [0],
+        "allowedGuilds": [0],
+        "allowedChannels": [0],
+        "prefix": "!",
+        "requireMentionInGuilds": true,
+        "allowBotMentions": true,
+        "adminChannelId": "PASTE_ADMIN_CHANNEL_ID_HERE"
+    },
     "app": {
         "name": "Antigravity",
         "targetExecutables": [
