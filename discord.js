@@ -481,7 +481,6 @@ async function main() {
             state.sessionPromise = (async () => {
                 const savedCascadeId = updateSessionMap(state.channelId);
                 const session = await createExtraSession(auth, savedCascadeId, { autoOpen: false });
-                state.session = session;
                 writeSessionMap(state.channelId, session.cascadeId);
                 await bindSession(state, session);
                 // Wait for transport mode detection before allowing sends
@@ -495,13 +494,20 @@ async function main() {
                     session.openStream();
                 });
                 if (mode !== 'polling') {
-                    await destroySession(state);
+                    try { session.removeAllListeners(); session.destroy(); } catch {}
                     throw new Error('discord.js only supports polling mode (Antigravity ≥1.20.5). Streaming detected.');
                 }
+                // Only assign to state after transport is confirmed
+                state.session = session;
                 dlog(`[session] channel=${state.channelId} cascade=${session.cascadeId} mode=${mode} resumed=${!!savedCascadeId}`);
                 return session;
-            })().catch((err) => {
+            })().catch(async (err) => {
                 state.sessionPromise = null;
+                // Clean up half-initialized session so next ensureSession() doesn't reuse it
+                if (state.session) {
+                    try { state.session.removeAllListeners(); state.session.destroy(); } catch {}
+                    state.session = null;
+                }
                 throw err;
             });
         }
@@ -606,6 +612,7 @@ async function main() {
             return true;
 
         case `${PREFIX}new`:
+            if (state.session && state.busy) await state.session.stop();
             await destroySession(state);
             deleteSessionMap(state.channelId);
             await ensureSession(state);
@@ -702,6 +709,7 @@ async function main() {
                 await sendMessage(message.channel.id, `Use \`${PREFIX}list\` first, then \`${PREFIX}switch 1~${list.length}\``);
                 return true;
             }
+            if (state.busy) { await session.stop(); state.busy = false; state.queue = []; clearRenderTimers(state); }
             const target = list[num - 1];
             session.switchCascade(target.id);
             writeSessionMap(state.channelId, target.id);
