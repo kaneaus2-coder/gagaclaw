@@ -1098,31 +1098,44 @@ class Session extends EventEmitter {
             return;
         }
 
-        // ── Find latest PLANNER_RESPONSE step (after send point) for thinking/response text ──
-        let contentStep = null;
-        for (let si = numSteps - 1; si >= this._pollSendStepCount; si--) {
+        // ── Collect ALL response text from steps after send point ──
+        // Combines plannerResponse + notifyUser from all steps into one string
+        let fullThinking = '';
+        let fullResponse = '';
+        for (let si = this._pollSendStepCount; si < numSteps; si++) {
             const step = steps[si];
-            if (step.plannerResponse) { contentStep = step; break; }
+            if (step.plannerResponse) {
+                const t = step.plannerResponse.thinking || '';
+                const r = step.plannerResponse.modifiedResponse || step.plannerResponse.response || '';
+                if (t) fullThinking += (fullThinking ? '\n' : '') + t;
+                if (r) fullResponse += (fullResponse ? '\n' : '') + r;
+            }
+            if (step.notifyUser) {
+                // notificationContent is the primary field; argumentsJson.Message is fallback
+                let msg = step.notifyUser.notificationContent || '';
+                if (!msg && step.notifyUser.argumentsJson) {
+                    try { msg = JSON.parse(step.notifyUser.argumentsJson).Message || ''; } catch {}
+                }
+                if (!msg && step.metadata?.toolCall?.argumentsJson) {
+                    try { msg = JSON.parse(step.metadata.toolCall.argumentsJson).Message || ''; } catch {}
+                }
+                if (msg) fullResponse += (fullResponse ? '\n' : '') + msg;
+            }
         }
 
-        if (contentStep) {
-            const thinkingText = contentStep.plannerResponse.thinking || '';
-            const responseText = contentStep.plannerResponse.modifiedResponse || contentStep.plannerResponse.response || '';
-
-            if (thinkingText.length > this._pollLastThinkingLen) {
-                const delta = thinkingText.slice(this._pollLastThinkingLen);
-                this.emit('thinking', delta, thinkingText);
-                this._lastThinking = thinkingText;
-                this._pollLastThinkingLen = thinkingText.length;
-                this._pollIdleCount = 0;
-            }
-            if (responseText.length > this._pollLastResponseLen) {
-                const delta = responseText.slice(this._pollLastResponseLen);
-                this.emit('response', delta, responseText);
-                this._lastResponse = responseText;
-                this._pollLastResponseLen = responseText.length;
-                this._pollIdleCount = 0;
-            }
+        if (fullThinking.length > this._pollLastThinkingLen) {
+            const delta = fullThinking.slice(this._pollLastThinkingLen);
+            this.emit('thinking', delta, fullThinking);
+            this._lastThinking = fullThinking;
+            this._pollLastThinkingLen = fullThinking.length;
+            this._pollIdleCount = 0;
+        }
+        if (fullResponse.length > this._pollLastResponseLen) {
+            const delta = fullResponse.slice(this._pollLastResponseLen);
+            this.emit('response', delta, fullResponse);
+            this._lastResponse = fullResponse;
+            this._pollLastResponseLen = fullResponse.length;
+            this._pollIdleCount = 0;
         }
 
         // ── Emit tool calls for new steps (after send point) ──

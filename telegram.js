@@ -135,6 +135,7 @@ function mdToHtml(text) {
 
 async function tgSend(chatId, text, opts = {}) {
     const safeText = String(text || '(empty)').slice(0, 4000);
+    flog(`TG_SEND chat=${chatId} len=${safeText.length} text=${safeText.slice(0, 200)}`);
     const r = await tgRequest('sendMessage', { chat_id: chatId, text: safeText, ...opts });
     return r.ok ? r.result.message_id : null;
 }
@@ -142,6 +143,7 @@ async function tgSend(chatId, text, opts = {}) {
 async function tgEdit(chatId, msgId, text, opts = {}) {
     if (!msgId) return false;
     const safeText = String(text || '(empty)').slice(0, 4000);
+    flog(`TG_EDIT chat=${chatId} msgId=${msgId} len=${safeText.length} text=${safeText.slice(0, 200)}`);
     const r = await tgRequest('editMessageText', { chat_id: chatId, message_id: msgId, text: safeText, ...opts });
     if (!r.ok) flog(`[tgEdit] FAIL msgId=${msgId} len=${safeText.length} err=${r.description || JSON.stringify(r).slice(0, 200)}`);
     return r.ok;
@@ -985,11 +987,13 @@ async function main() {
                         try { require('child_process').execSync(`pkill -9 -f ${exeName.replace(/\.exe$/i, '')}`, { stdio: 'ignore' }); } catch { }
                     }
                     await tgRequest('getUpdates', { offset: updateOffset, timeout: 0 }); // ACK updates before exit
+
                     process.exit(42);
                 } else if (sub === 'warm' || sub === 'hot') {
                     await tgSend(chatId, '🔄 Warm restart...');
                     session.destroy();
                     await tgRequest('getUpdates', { offset: updateOffset, timeout: 0 }); // ACK updates before exit
+
                     process.exit(42);
                 } else if (!arg) {
                     await tgSendButtons(chatId, '🔄 Choose restart type:', [[
@@ -1000,6 +1004,7 @@ async function main() {
                     await tgSend(chatId, '🔄 Warm restart...');
                     session.destroy();
                     await tgRequest('getUpdates', { offset: updateOffset, timeout: 0 }); // ACK updates before exit
+
                     process.exit(42);
                 }
                 return true;
@@ -1178,12 +1183,14 @@ async function main() {
                                     try { require('child_process').execSync(`pkill -9 -f ${exeName.replace(/\.exe$/i, '')}`, { stdio: 'ignore' }); } catch { }
                                 }
                                 await tgRequest('getUpdates', { offset: updateOffset, timeout: 0 }); // ACK updates before exit
+            
                                 process.exit(42);
                             } else {
                                 await tgAnswer(query.id);
                                 await tgEdit(chatId, msgId, '🔄 Warm restart...');
                                 session.destroy();
                                 await tgRequest('getUpdates', { offset: updateOffset, timeout: 0 }); // ACK updates before exit
+            
                                 process.exit(42);
                             }
                         } else if (data === 'cmd_noop') {
