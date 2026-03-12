@@ -140,7 +140,7 @@ async function main() {
             process.stdout.write(`\n${c.gray}  > ${tc.CommandLine}${c.reset}`);
         } else if (tc.toolName && tc.toolName !== 'run_command') {
             const summary = tc.toolSummary || tc.TaskName || tc.toolName;
-            const detail = tc.CommandLine || tc.Task || tc.AbsolutePath || tc.Url || '';
+            const detail = tc.CommandLine || tc.Task || tc.AbsolutePath || tc.Url || tc.Query || '';
             process.stdout.write(`\n${c.blue}  [${tc.toolName}]${c.reset} ${summary}${detail ? ` — ${detail.slice(0, 120)}` : ''}`);
         }
     });

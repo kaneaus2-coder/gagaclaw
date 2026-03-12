@@ -453,7 +453,7 @@ async function main() {
         if (tc.toolName === 'run_command' && tc.SafeToAutoRun !== false && tc.CommandLine) {
             tgSendTemp(activeChatId, `⚙️ <code>${escapeHtml(tc.CommandLine)}</code>`, HTML).catch(() => { });
         } else if (tc.toolName && tc.toolName !== 'run_command') {
-            const detail = tc.CommandLine || tc.AbsolutePath || tc.Url || tc.Task || '';
+            const detail = tc.CommandLine || tc.AbsolutePath || tc.Url || tc.Query || tc.Task || '';
             const short = detail ? ` — ${detail.slice(0, 100)}` : '';
             tgSendTemp(activeChatId, `🔧 <b>${escapeHtml(tc.toolName)}</b>${escapeHtml(short)}`, HTML).catch(() => { });
         }

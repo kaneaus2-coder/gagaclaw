@@ -623,6 +623,7 @@ class Session extends EventEmitter {
         this._pollIdleCount = 0;  // consecutive polls with no change
         this._pollSendStepCount = 0;  // step count at send() time — ignore older steps
         this._pollApprovedSteps = new Set();  // step indices already approved — skip on next poll
+        this._pollEmittedToolCalls = new Set();  // tool call keys already emitted
 
         this._applyModel();
         this._applyMode();
@@ -1143,8 +1144,9 @@ class Session extends EventEmitter {
             const tc = steps[si].metadata?.toolCall;
             if (!tc?.name) continue;
             const tcKey = `${tc.name}:${si}`;
-            if (tcKey === this._lastSeenToolCall?._pollKey) continue;
-            const tcObj = { tool: tc.name, _pollKey: tcKey };
+            if (this._pollEmittedToolCalls.has(tcKey)) continue;
+            this._pollEmittedToolCalls.add(tcKey);
+            const tcObj = { tool: tc.name, toolName: tc.name, _pollKey: tcKey };
             try { Object.assign(tcObj, JSON.parse(tc.argumentsJson || '{}')); } catch {}
             this._lastSeenToolCall = tcObj;
             this.emit('toolCall', tcObj);
@@ -1217,6 +1219,7 @@ class Session extends EventEmitter {
         this._pollIdleCount = 0;
         this._pollSendStepCount = this._pollLastNumSteps;  // only look at steps AFTER this point
         this._pollApprovedSteps.clear();
+        this._pollEmittedToolCalls.clear();
         this._pendingToolCall = null;
         this._awaitingResponse = true;
         if (this._pollingMode) this._adjustPollRate();
