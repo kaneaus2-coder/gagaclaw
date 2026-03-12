@@ -737,6 +737,7 @@ class Session extends EventEmitter {
 
     _finishTurn() {
         if (!this._awaitingResponse || this._pendingToolCall) return false;
+        pktWrite(`FINISH_TURN respLen=${(this._lastResponse||'').length} thinkLen=${(this._lastThinking||'').length} serverErr=${!!this._lastServerError}`);
         if (!this._lastResponse && !this._lastThinking && this._lastServerError) {
             this.emit('error', this._lastServerError);
         }
