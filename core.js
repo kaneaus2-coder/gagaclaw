@@ -590,7 +590,18 @@ async function captureAuth(browser, page, logger) {
 
 // ─── Session class ───────────────────────────────────────────────────────────
 // Events: 'thinking', 'response', 'toolCall', 'permissionWait', 'turnDone',
-//         'newStep', 'streamReconnect', 'error'
+//         'newStep', 'streamReconnect', 'error', 'transportMode'
+//
+// 'response' (delta, full) / 'thinking' (delta, full) contract:
+//   STREAMING: delta = incremental within current step.
+//     full = step-level text (resets on newStep and after approvePermission).
+//     Consumers MUST accumulate via += delta to preserve cross-step text.
+//   POLLING: delta = globally incremental across all post-send steps.
+//     full = cumulative text across all post-send steps.
+//     approvePermission does NOT reset poll offsets — no replay.
+//     Both += delta and using full directly produce the same result.
+//   send() resets everything in both modes.
+//
 class Session extends EventEmitter {
     constructor(auth) {
         super();

@@ -3,6 +3,7 @@ node_modules/
 gagaclaw.json
 cronjobs.json
 mcp_config.json
+discord_sessions.json
 queue/
 Sent/
 toSend/
