@@ -339,6 +339,7 @@ async function main() {
                 queue: [],
                 draftId: null,
                 placeholderMsgId: null, // fallback when draft not supported
+                responseMsgId: null,
                 thinkingText: '',
                 responseText: '',
                 lastEditTime: 0,
@@ -363,8 +364,7 @@ async function main() {
         const st = getChat(chatId);
         if (st.editTimer) return; // already scheduled
         const elapsed = Date.now() - st.lastEditTime;
-        // Draft mode: 300ms throttle; fallback edit mode: 1s throttle
-        const interval = st.draftId ? 300 : 1000;
+        const interval = st.responseMsgId ? 1000 : 300;
         const delay = Math.max(0, interval - elapsed);
         st.editTimer = setTimeout(async () => {
             st.editTimer = null;
@@ -372,7 +372,7 @@ async function main() {
             if (!st.responseText) return; // thinking is shown via thinking handler
 
             // Show last 3000 chars during streaming (full text sent in turnDone)
-            const tail = st.responseText.length > 3000 ? '…' + st.responseText.slice(-3000) : st.responseText;
+            const tail = st.responseText.length > 3000 ? '...' + st.responseText.slice(-3000) : st.responseText;
             const display = mdToHtml(tail);
             const truncated = display.slice(0, 3900);
 
@@ -380,24 +380,16 @@ async function main() {
             if (truncated === st.lastEditContent) return;
             st.lastEditContent = truncated;
 
-            // Draft mode: use sendMessageDraft
-            if (st.draftId) {
-                const ok = await tgDraft(chatId, st.draftId, truncated, HTML);
-                if (!ok && !st.placeholderMsgId) {
-                    // Draft failed — fallback to sendMessage + edit mode
-                    flog(`[DRAFT_FALLBACK] draft failed, switching to edit mode`);
-                    st.draftId = null;
-                    st.placeholderMsgId = await tgSend(chatId, truncated, HTML)
-                        || await tgSend(chatId, tail.slice(0, 3900));
-                }
+            // Keep thinking and response in separate messages.
+            if (!st.responseMsgId) {
+                st.responseMsgId = await tgSend(chatId, truncated, HTML)
+                    || await tgSend(chatId, tail.slice(0, 3900));
                 return;
             }
 
-            // Fallback: editMessageText mode
-            if (!st.placeholderMsgId) return;
-            const ok = await tgEdit(chatId, st.placeholderMsgId, truncated, HTML);
+            const ok = await tgEdit(chatId, st.responseMsgId, truncated, HTML);
             if (!ok) {
-                await tgEdit(chatId, st.placeholderMsgId, tail.slice(0, 3900));
+                await tgEdit(chatId, st.responseMsgId, tail.slice(0, 3900));
             }
         }, delay);
     }
@@ -496,7 +488,7 @@ async function main() {
         const chunks = splitText(finalText, 3500);
         flog(`[TURN_DONE] chunks=${chunks.length} sizes=[${chunks.map(c => c.length).join(',')}]`);
         (async () => {
-            // Delete the streaming message, then send all chunks as new messages
+            // Remove the thinking bubble only after the response is finalized.
             if (st.draftId) {
                 st.draftId = null;
             }
@@ -505,16 +497,29 @@ async function main() {
                 st.placeholderMsgId = null;
             }
 
-            for (const chunk of chunks) {
-                const chunkHtml = mdToHtml(chunk);
-                const mid = await tgSend(activeChatId, chunkHtml, HTML);
-                if (!mid) await tgSend(activeChatId, chunk);
+            if (st.responseMsgId && chunks.length === 1) {
+                const finalHtml = mdToHtml(chunks[0]).slice(0, 3900);
+                const ok = await tgEdit(activeChatId, st.responseMsgId, finalHtml, HTML);
+                if (!ok) {
+                    await tgEdit(activeChatId, st.responseMsgId, chunks[0].slice(0, 3900));
+                }
+            } else {
+                if (st.responseMsgId) {
+                    tgDeleteMessage(activeChatId, st.responseMsgId);
+                    st.responseMsgId = null;
+                }
+                for (const chunk of chunks) {
+                    const chunkHtml = mdToHtml(chunk);
+                    const mid = await tgSend(activeChatId, chunkHtml, HTML);
+                    if (!mid) await tgSend(activeChatId, chunk);
+                }
             }
 
             // Reset state & dequeue
             st.busy = false;
             st.draftId = null;
             st.placeholderMsgId = null;
+            st.responseMsgId = null;
             st.thinkingText = '';
             st.responseText = '';
             st.lastEditContent = '';
@@ -588,7 +593,9 @@ async function main() {
         st.thinkingText = '';
         st.responseText = '';
         st.lastEditTime = 0;
+        st.lastEditContent = '';
         st.placeholderMsgId = null;
+        st.responseMsgId = null;
         activeChatId = chatId;
 
         // Use sendMessageDraft for streaming (random non-zero draft_id)
@@ -612,6 +619,7 @@ async function main() {
             }
             st.busy = false;
             st.placeholderMsgId = null;
+            st.responseMsgId = null;
             dequeue(chatId);
         }
         // Events will handle display updates; turnDone will dequeue
@@ -728,7 +736,16 @@ async function main() {
                 if (st.busy) {
                     st.busy = false;
                     st.draftId = null;
+                    if (st.placeholderMsgId) {
+                        tgDeleteMessage(chatId, st.placeholderMsgId);
+                        st.placeholderMsgId = null;
+                    }
+                    if (st.responseMsgId) {
+                        tgDeleteMessage(chatId, st.responseMsgId);
+                        st.responseMsgId = null;
+                    }
                     if (st.editTimer) { clearTimeout(st.editTimer); st.editTimer = null; }
+                    if (st._thinkingTimer) { clearTimeout(st._thinkingTimer); st._thinkingTimer = null; }
                 }
                 await tgSend(chatId, res.status === 200 ? '✅ Stopped' : '❌ Stop failed');
                 return true;
