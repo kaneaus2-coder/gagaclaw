@@ -865,9 +865,10 @@ class Session extends EventEmitter {
 
     openStream() {
         this._openAgentStateStream();
-        if (this._pollingMode) { this._startPolling(); return; }
+        if (this._pollingMode) { this._startPolling(); this._emitTransportMode(); return; }
         if (this._stream) { try { this._stream.abort(); } catch {} }
         this._streamOpenedAt = Date.now();
+        this._transportEmitted = false;
         this._stream = nodeStreamFetch(this.auth.lsPort, 'StreamCascadeReactiveUpdates',
             { protocolVersion: 1, id: this.cascadeId, subscriberId: 'session-' + Date.now() },
             this.auth.csrfToken,
@@ -880,14 +881,22 @@ class Session extends EventEmitter {
                         this._pollingMode = true;
                         if (this._stream) { try { this._stream.abort(); } catch {} this._stream = null; }
                         this._startPolling();
+                        this._emitTransportMode();
                         return;
                     }
                 } catch {}
+                if (!this._transportEmitted) { this._transportEmitted = true; this._emitTransportMode(); }
                 this._handleStreamFrame(frameJson);
             },
             () => this._handleStreamEnd(),
             this.auth.cdpHost
         );
+    }
+
+    _emitTransportMode() {
+        const mode = this._pollingMode ? 'polling' : 'streaming';
+        pktWrite(`TRANSPORT_MODE ${mode}`);
+        this.emit('transportMode', mode);
     }
 
     _handleStreamFrame(frameJson) {
@@ -1096,6 +1105,7 @@ class Session extends EventEmitter {
                 this._pollingMode = true;
                 this._stream = null;
                 this._startPolling();
+                this._emitTransportMode();
                 return;
             }
         } else {

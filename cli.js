@@ -116,6 +116,13 @@ async function main() {
     }
 
     // ── Wire session events to CLI display ──
+    session.on('transportMode', (mode) => {
+        const label = mode === 'polling'
+            ? 'Polling mode (Antigravity ≥1.20.5)'
+            : 'Streaming mode (legacy Antigravity)';
+        console.log(`${c.cyan}[✓] ${label}${c.reset}`);
+    });
+
     session.on('thinking', (delta) => {
         if (!thinkingShown) { process.stdout.write(`${c.dim}[Thinking] `); thinkingShown = true; }
         process.stdout.write(`${c.dim}${delta}${c.reset}`);

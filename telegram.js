@@ -398,6 +398,14 @@ async function main() {
     // We use a single session, broadcasting to the active chat
     let activeChatId = ADMIN_CHAT_ID;
 
+    session.on('transportMode', (mode) => {
+        const label = mode === 'polling'
+            ? '📡 Polling mode (Antigravity ≥1.20.5)'
+            : '⚡ Streaming mode (legacy Antigravity)';
+        console.log(`[✓] ${label}`);
+        if (ADMIN_CHAT_ID) tgSend(String(ADMIN_CHAT_ID), label).catch(() => {});
+    });
+
     session.on('thinking', (delta, full) => {
         if (!activeChatId) return;
         const st = getChat(activeChatId);
