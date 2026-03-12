@@ -72,14 +72,21 @@ const tlsAgent = new https.Agent({ rejectUnauthorized: false });
 const pktLog = fs.createWriteStream(path.join(__dirname, 'network-packets.log'), { flags: 'w' });
 const ts = () => new Date().toISOString().slice(11, 23);
 function pktWrite(msg) { pktLog.write(`[${ts()}] ${msg}\n`); }
+function pktWriteBlock(label, text) {
+    pktWrite(label);
+    const body = String(text ?? '');
+    if (!body) return;
+    for (const line of body.replace(/\r\n/g, '\n').split('\n')) {
+        pktLog.write(`    ${line}\n`);
+    }
+}
 pktLog.write(`Session: ${new Date().toISOString()}\n${'═'.repeat(60)}\n`);
 
 // ─── Node.js direct API calls ────────────────────────────────────────────────
 function nodePost(port, pathName, body, csrfToken, host) {
     const url = `https://${host || '127.0.0.1'}:${port}/exa.language_server_pb.LanguageServerService/${pathName}`;
     const payload = JSON.stringify(body);
-    pktWrite(`>>> POST ${pathName}`);
-    pktWrite(`    ${payload.slice(0, 2000)}`);
+    pktWriteBlock(`>>> POST ${pathName}`, payload);
     return new Promise((resolve, reject) => {
         const req = https.request(url, {
             method: 'POST',
@@ -94,8 +101,7 @@ function nodePost(port, pathName, body, csrfToken, host) {
             let data = '';
             res.on('data', chunk => data += chunk);
             res.on('end', () => {
-                pktWrite(`<<< ${res.statusCode} ${pathName}`);
-                pktWrite(`    ${data.slice(0, 2000)}`);
+                pktWriteBlock(`<<< ${res.statusCode} ${pathName}`, data);
                 resolve({ status: res.statusCode, body: data });
             });
         });
@@ -143,11 +149,11 @@ function nodeStreamFetch(port, pathName, body, csrfToken, onFrame, onEnd, host) 
 
                 if (flags & 0x02) {
                     // Trailer frame may contain error info — forward before ending
-                    if (payload) { pktWrite(`    S[trailer] ${payload.slice(0, 3000)}`); try { onFrame(payload); } catch {} }
+                    if (payload) { pktWriteBlock(`S[trailer]`, payload); try { onFrame(payload); } catch {} }
                     fireEnd();
                     return;
                 }
-                pktWrite(`    S[] ${payload.slice(0, 3000)}`);
+                pktWriteBlock(`S[]`, payload);
                 try { onFrame(payload); } catch { }
             }
         });
@@ -610,8 +616,12 @@ class Session extends EventEmitter {
         this._turnDoneTimer = null;
         this._awaitingResponse = false;
         this._stream = null;
+        this._agentStateStream = null;
+        this._agentStateReconnectTimer = null;
         this._lastServerError = '';
         this._lastServerErrorTime = 0;
+        this._lastAgentMessageMetadataCount = 0;
+        this._agentMessageBaseline = 0;
 
         // Polling fallback state (for Antigravity ≥1.20.5 where streaming is disabled)
         this._pollingMode = false;
@@ -714,7 +724,96 @@ class Session extends EventEmitter {
         this._pollLastResponseLen = 0;
         this._pollLastStatus = null;
         this._pollIdleCount = 0;
+        this._lastAgentMessageMetadataCount = 0;
+        this._agentMessageBaseline = 0;
         this.openStream();
+    }
+
+    _isTerminalRunStatus(runStatus) {
+        return !runStatus ||
+            runStatus.includes('IDLE') ||
+            runStatus.includes('DONE') ||
+            runStatus.includes('COMPLETED');
+    }
+
+    _finishTurn() {
+        if (!this._awaitingResponse || this._pendingToolCall) return false;
+        if (!this._lastResponse && !this._lastThinking && this._lastServerError) {
+            this.emit('error', this._lastServerError);
+        }
+        this._awaitingResponse = false;
+        this._lastServerError = '';
+        this.emit('turnDone');
+        this._adjustPollRate();
+        return true;
+    }
+
+    _scheduleTurnDoneCheck(delay, reason) {
+        this._clearTurnDoneTimer();
+        this._turnDoneTimer = setTimeout(() => {
+            this._turnDoneTimer = null;
+            if (!this._awaitingResponse || this._pendingToolCall) return;
+            pktWrite(`TURN_DONE_FIRE reason=${reason}`);
+            this._finishTurn();
+        }, delay);
+    }
+
+    _openAgentStateStream() {
+        if (!this.cascadeId) return;
+        if (this._agentStateReconnectTimer) {
+            clearTimeout(this._agentStateReconnectTimer);
+            this._agentStateReconnectTimer = null;
+        }
+        if (this._agentStateStream) {
+            try { this._agentStateStream.abort(); } catch {}
+            this._agentStateStream = null;
+        }
+        this._agentStateStream = nodeStreamFetch(
+            this.auth.lsPort,
+            'StreamAgentStateUpdates',
+            { conversationId: this.cascadeId, subscriberId: 'agent-state-' + Date.now() },
+            this.auth.csrfToken,
+            (frameJson) => this._handleAgentStateFrame(frameJson),
+            () => this._handleAgentStateEnd(),
+            this.auth.cdpHost
+        );
+    }
+
+    _handleAgentStateFrame(frameJson) {
+        let obj;
+        try { obj = JSON.parse(frameJson); } catch { return; }
+        if (obj?.error) {
+            pktWrite(`AGENT_STATE_ERR ${obj.error.code || 'unknown'} ${obj.error.message || ''}`.trim());
+            return;
+        }
+        const update = obj?.update;
+        if (!update) return;
+
+        const mmCount = findMessageMetadataCount(update);
+        if (mmCount === null) return;
+
+        const prev = this._lastAgentMessageMetadataCount;
+        this._lastAgentMessageMetadataCount = mmCount;
+        pktWrite(`AGENT_STATE_MM count=${mmCount} prev=${prev} baseline=${this._agentMessageBaseline} status=${update.status || ''}`);
+
+        const statusLooksTerminal =
+            this._isTerminalRunStatus(update.status || '') &&
+            this._isTerminalRunStatus(update.executableStatus || '') &&
+            this._isTerminalRunStatus(update.executorLoopStatus || '');
+
+        if (this._awaitingResponse && !this._pendingToolCall && statusLooksTerminal && mmCount > this._agentMessageBaseline) {
+            this._scheduleTurnDoneCheck(100, 'agent-state-messageMetadata');
+        }
+    }
+
+    _handleAgentStateEnd() {
+        this._agentStateStream = null;
+        if (!this.cascadeId) return;
+        if (this._agentStateReconnectTimer) clearTimeout(this._agentStateReconnectTimer);
+        this._agentStateReconnectTimer = setTimeout(() => {
+            this._agentStateReconnectTimer = null;
+            this._openAgentStateStream();
+        }, 1000);
     }
 
     async resumeOrNew() {
@@ -732,6 +831,7 @@ class Session extends EventEmitter {
     // ── Stream management ──
 
     openStream() {
+        this._openAgentStateStream();
         if (this._pollingMode) { this._startPolling(); return; }
         if (this._stream) { try { this._stream.abort(); } catch {} }
         this._streamOpenedAt = Date.now();
@@ -856,19 +956,7 @@ class Session extends EventEmitter {
         }
         // Turn done → 5s debounce
         if (info.turnDone && !this._pendingToolCall && this._awaitingResponse) {
-            if (this._turnDoneTimer) clearTimeout(this._turnDoneTimer);
-            this._turnDoneTimer = setTimeout(() => {
-                this._turnDoneTimer = null;
-                if (this._awaitingResponse && !this._pendingToolCall) {
-                    // If no response was produced and there was a server error, report it
-                    if (!this._lastResponse && !this._lastThinking && this._lastServerError) {
-                        this.emit('error', this._lastServerError);
-                    }
-                    this._awaitingResponse = false;
-                    this._lastServerError = '';
-                    this.emit('turnDone');
-                }
-            }, 5000);
+            this._scheduleTurnDoneCheck(500, 'stream-turn-done');
         }
     }
 
@@ -909,7 +997,7 @@ class Session extends EventEmitter {
             };
         } else if (perm.type === 'file') {
             const scope = opts.scope || 'PERMISSION_SCOPE_CONVERSATION';
-            const pathUri = perm.permissionPath || perm.contextTool?.DirectoryPath || perm.contextTool?.AbsolutePath || '';
+            const pathUri = perm.permissionPath || perm.contextTool?.DirectoryPath || perm.contextTool?.AbsolutePath || perm.contextTool?.TargetFile || perm.contextTool?.targetFile || '';
             interactionPayload = {
                 cascadeId: this.cascadeId,
                 interaction: { trajectoryId: perm._trajectoryId, stepIndex: perm._stepIndex, filePermission: { allow: allowed, scope, absolutePathUri: pathUri } }
@@ -932,9 +1020,9 @@ class Session extends EventEmitter {
             return;
         }
 
-        pktWrite(`APPROVE>>> ${JSON.stringify(interactionPayload).slice(0, 2000)}`);
+        pktWriteBlock(`APPROVE>>>`, JSON.stringify(interactionPayload));
         let res = await nodePost(this.auth.lsPort, 'HandleCascadeUserInteraction', interactionPayload, this.auth.csrfToken, this.auth.cdpHost);
-        pktWrite(`APPROVE<<< status=${res.status} body=${res.body.slice(0, 500)}`);
+        pktWriteBlock(`APPROVE<<< status=${res.status}`, res.body);
         // Retry on "not registered" — race condition: server hasn't registered the input handler yet
         // Use up to 12 retries with 1s fixed delay (~12s total) to handle slow browser-action steps
         if (res.status !== 200 && res.body && res.body.includes('not registered')) {
@@ -943,7 +1031,7 @@ class Session extends EventEmitter {
                 pktWrite(`APPROVE_RETRY ${retry}/12 in ${delay}ms (not registered)`);
                 await new Promise(r => setTimeout(r, delay));
                 res = await nodePost(this.auth.lsPort, 'HandleCascadeUserInteraction', interactionPayload, this.auth.csrfToken, this.auth.cdpHost);
-                pktWrite(`APPROVE<<< status=${res.status} body=${res.body.slice(0, 500)}`);
+                pktWriteBlock(`APPROVE<<< status=${res.status}`, res.body);
                 if (res.status === 200 || !(res.body && res.body.includes('not registered'))) break;
             }
         }
@@ -956,12 +1044,19 @@ class Session extends EventEmitter {
             }
         }
 
-        // Reset for continued response
-        this._lastThinking = '';
-        this._lastResponse = '';
-        this._pollLastThinkingLen = 0;
-        this._pollLastResponseLen = 0;
-        this._pollIdleCount = 0;
+        // Reset for continued response.
+        // Stream mode emits per-step text, so we must clear delta tracking.
+        // Polling mode emits cumulative full text across all post-send steps,
+        // so clearing poll offsets here would replay earlier content.
+        if (this._pollingMode) {
+            this._pollIdleCount = 0;
+        } else {
+            this._lastThinking = '';
+            this._lastResponse = '';
+            this._pollLastThinkingLen = 0;
+            this._pollLastResponseLen = 0;
+            this._pollIdleCount = 0;
+        }
         this._pendingToolCall = null;
         this.emit('permissionResolved');
         return res.status === 200;
@@ -1007,6 +1102,13 @@ class Session extends EventEmitter {
         this._pollTimer = setInterval(() => this._pollOnce(), interval);
     }
 
+    _clearTurnDoneTimer() {
+        if (this._turnDoneTimer) {
+            clearTimeout(this._turnDoneTimer);
+            this._turnDoneTimer = null;
+        }
+    }
+
     async _pollOnce() {
         if (!this.cascadeId) return;
         try {
@@ -1025,12 +1127,13 @@ class Session extends EventEmitter {
 
         // Detect new steps
         if (numSteps > this._pollLastNumSteps) {
+            // New content arrived after a debounce was scheduled; this turn is still active.
+            this._clearTurnDoneTimer();
             for (let i = this._pollLastNumSteps; i < numSteps; i++) {
                 if (i > 0) {
-                    this._lastThinking = '';
-                    this._lastResponse = '';
-                    this._pollLastThinkingLen = 0;
-                    this._pollLastResponseLen = 0;
+                    // Polling builds cumulative full text across all post-send steps.
+                    // Do not reset lengths here, or every later step will replay all
+                    // earlier response/thinking text as fresh delta.
                     this.emit('newStep');
                 }
             }
@@ -1062,7 +1165,7 @@ class Session extends EventEmitter {
             if (tc?.argumentsJson) {
                 try {
                     const args = JSON.parse(tc.argumentsJson);
-                    permPath = args.AbsolutePath || args.FilePath || args.DirectoryPath || args.absolutePath || args.filePath || null;
+                    permPath = args.AbsolutePath || args.FilePath || args.DirectoryPath || args.TargetFile || args.absolutePath || args.filePath || args.targetFile || null;
                     permCmd = args.CommandLine || args.command || null;
                 } catch {}
             }
@@ -1125,6 +1228,7 @@ class Session extends EventEmitter {
         }
 
         if (fullThinking.length > this._pollLastThinkingLen) {
+            this._clearTurnDoneTimer();
             const delta = fullThinking.slice(this._pollLastThinkingLen);
             this.emit('thinking', delta, fullThinking);
             this._lastThinking = fullThinking;
@@ -1132,6 +1236,7 @@ class Session extends EventEmitter {
             this._pollIdleCount = 0;
         }
         if (fullResponse.length > this._pollLastResponseLen) {
+            this._clearTurnDoneTimer();
             const delta = fullResponse.slice(this._pollLastResponseLen);
             this.emit('response', delta, fullResponse);
             this._lastResponse = fullResponse;
@@ -1158,41 +1263,22 @@ class Session extends EventEmitter {
         const lastStepStatus = lastStep.status || '';
         const lastStepType = lastStep.type || '';
         const runStatus = data.status || '';
-        // Must have new steps after send AND last step must not be USER_INPUT
         const hasNewContentSteps = numSteps > this._pollSendStepCount + 1 && !lastStepType.includes('USER_INPUT');
 
-        // By cascade run status change — only if we already got content steps
+        if (this._awaitingResponse && !this._pendingToolCall) {
+            this._pollIdleCount++;
+        }
+
         if (hasNewContentSteps && this._pollLastStatus && this._pollLastStatus !== runStatus) {
-            if (runStatus.includes('IDLE') || runStatus.includes('DONE') || runStatus.includes('COMPLETED')) {
-                if (this._awaitingResponse && !this._pendingToolCall) {
-                    if (this._turnDoneTimer) clearTimeout(this._turnDoneTimer);
-                    this._turnDoneTimer = setTimeout(() => {
-                        this._turnDoneTimer = null;
-                        if (this._awaitingResponse && !this._pendingToolCall) {
-                            this._awaitingResponse = false;
-                            this.emit('turnDone');
-                            this._adjustPollRate();
-                        }
-                    }, 1000);
-                }
+            if (this._isTerminalRunStatus(runStatus) && this._awaitingResponse && !this._pendingToolCall) {
+                this._scheduleTurnDoneCheck(1000, 'poll-run-status');
             }
         }
         this._pollLastStatus = runStatus;
 
-        // By idle count — only if we have content steps after send, last step is DONE and not USER_INPUT
         if (this._awaitingResponse && !this._pendingToolCall) {
-            this._pollIdleCount++;
-            if (this._pollIdleCount >= 6 && hasNewContentSteps && lastStepStatus.includes('DONE')) {
-                if (!this._turnDoneTimer) {
-                    this._turnDoneTimer = setTimeout(() => {
-                        this._turnDoneTimer = null;
-                        if (this._awaitingResponse && !this._pendingToolCall) {
-                            this._awaitingResponse = false;
-                            this.emit('turnDone');
-                            this._adjustPollRate();
-                        }
-                    }, 1000);
-                }
+            if (this._pollIdleCount >= 6 && hasNewContentSteps && lastStepStatus.includes('DONE') && this._isTerminalRunStatus(runStatus)) {
+                this._scheduleTurnDoneCheck(1000, 'poll-idle-count');
             }
         }
     }
@@ -1220,7 +1306,9 @@ class Session extends EventEmitter {
         this._pollSendStepCount = this._pollLastNumSteps;  // only look at steps AFTER this point
         this._pollApprovedSteps.clear();
         this._pollEmittedToolCalls.clear();
+        this._clearTurnDoneTimer();
         this._pendingToolCall = null;
+        this._agentMessageBaseline = this._lastAgentMessageMetadataCount || 0;
         this._awaitingResponse = true;
         if (this._pollingMode) this._adjustPollRate();
         return true;
@@ -1236,6 +1324,8 @@ class Session extends EventEmitter {
 
     destroy() {
         if (this._stream) { try { this._stream.abort(); } catch {} }
+        if (this._agentStateStream) { try { this._agentStateStream.abort(); } catch {} }
+        if (this._agentStateReconnectTimer) clearTimeout(this._agentStateReconnectTimer);
         this._stopPolling();
         if (this._turnDoneTimer) clearTimeout(this._turnDoneTimer);
         if (this._pendingPermTimer) clearTimeout(this._pendingPermTimer);
@@ -1337,7 +1427,7 @@ async function connectAndAuth(logger) {
     try {
         await page.exposeFunction('__onIdeInteraction', (payload) => {
             pktWrite(`IDE>>> HandleCascadeUserInteraction`);
-            pktWrite(`IDE>>> ${payload.slice(0, 3000)}`);
+            pktWriteBlock(`IDE>>>`, payload);
         });
         await page.evaluate(() => {
             const origFetch = window.fetch;
@@ -1369,6 +1459,23 @@ async function connectAndAuth(logger) {
     auth.cdpHost = cdpHost;
     log('info', `Auth ready · LS port ${auth.lsPort} · host ${cdpHost}`);
     return auth;
+}
+
+function findMessageMetadataCount(node) {
+    if (!node || typeof node !== 'object') return null;
+    if (Array.isArray(node)) {
+        for (const item of node) {
+            const found = findMessageMetadataCount(item);
+            if (found !== null) return found;
+        }
+        return null;
+    }
+    if (Array.isArray(node.messageMetadata)) return node.messageMetadata.length;
+    for (const key of Object.keys(node)) {
+        const found = findMessageMetadataCount(node[key]);
+        if (found !== null) return found;
+    }
+    return null;
 }
 
 // ─── High-level: create a ready-to-use session ───────────────────────────────
