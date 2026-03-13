@@ -112,7 +112,7 @@ async function main() {
         rl.pause();
         thinkingShown = false;
         process.stdout.write(`\n${c.green}${c.bold}${appName}: ${c.reset}`);
-        session.send(item.prompt);
+        session.send(item.prompt, { source: 'cli' });
     }
 
     // ── Wire session events to CLI display ──
@@ -512,7 +512,7 @@ async function main() {
         rl.pause();
         thinkingShown = false;
         process.stdout.write(`\n${c.green}${c.bold}${appName}: ${c.reset}`);
-        const ok = await session.send(userInput);
+        const ok = await session.send(userInput, { source: 'cli' });
         if (!ok) {
             rl.resume();
             rl.prompt();

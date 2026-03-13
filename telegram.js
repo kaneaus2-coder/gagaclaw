@@ -616,7 +616,7 @@ async function main() {
             st.placeholderMsgId = await tgSend(chatId, '⏳ Thinking…');
         }
 
-        const ok = await session.send(text);
+        const ok = await session.send(text, { source: 'telegram' });
         if (!ok) {
             if (st.draftId) {
                 // Clear draft and send error as regular message
@@ -684,7 +684,7 @@ async function main() {
         if (item.mode) session.setMode(item.mode);
         if (item.agentic !== null && item.agentic !== undefined) session.setAgentic(item.agentic);
 
-        const chatId = String(item.chatId || ADMIN_CHAT_ID);
+        const chatId = String(item.targetId || ADMIN_CHAT_ID);
         if (!chatId) {
             console.log(`[⏰] No chatId for job ${item.id}, skipping`);
             flog(`[CRON] No chatId for job ${item.id}, skipping`);
@@ -730,6 +730,7 @@ async function main() {
                 const newId = await session.startNewCascade();
                 if (newId) {
                     session.switchCascade(newId);
+                    session.markBootstrapPending(true);
                     await tgSend(chatId, `✅ New conversation: ${newId.substring(0, 8)}...`);
                 } else {
                     await tgSend(chatId, '❌ Failed to create conversation');

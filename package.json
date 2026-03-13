@@ -1,11 +1,13 @@
 {
   "name": "gagaclaw",
-  "version": "1.3.2",
+  "version": "1.4.0",
   "main": "telegram.js",
   "scripts": {
-    "start:telegram": "node telegram.js",
-    "start:discord": "node discord.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start:telegram": "node telegram.js telegram-agent",
+    "start:discord": "node discord.js discord-bot",
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start:telegram-agent": "node telegram.js telegram-agent",
+    "start:discord-bot": "node discord.js discord-bot"
   },
   "keywords": [],
   "author": "joeIvan2",

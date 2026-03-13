@@ -88,14 +88,26 @@ function _log(msg) {
 }
 
 // ─── Queue: write job file for consumers ─────────────────────────────────────
+function normalizeTargets(job) {
+    const valid = new Set(['telegram', 'cli', 'discord']);
+    const key = String(job.target || '').trim().toLowerCase();
+    return valid.has(key) ? [key] : ['telegram'];
+}
+
+function resolveTargetId(job, target) {
+    const explicit = job.targetId;
+    if (explicit !== undefined && explicit !== null && String(explicit).trim() !== '') {
+        return String(explicit);
+    }
+    if (target === 'cli') return null;
+    return null;
+}
+
 function enqueueJob(job) {
-    // Determine target from notify config
-    const targets = [];
-    if (job.notify?.telegram) targets.push('telegram');
-    if (job.notify?.cli) targets.push('cli');
-    if (targets.length === 0) targets.push('telegram'); // default
+    const targets = normalizeTargets(job);
 
     for (const target of targets) {
+        const targetId = resolveTargetId(job, target);
         const fileName = `${target}_${job.id}_${Date.now()}.json`;
         const payload = {
             id: job.id,
@@ -104,7 +116,7 @@ function enqueueJob(job) {
             mode: job.mode || null,
             agentic: job.agentic !== undefined ? job.agentic : null,
             cascadeId: job.cascadeId || null,
-            chatId: job.notify?.telegram || null,
+            targetId,
             target,
             createdAt: new Date().toISOString(),
         };

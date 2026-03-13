@@ -1,5 +1,22 @@
 # Changelog
 
+## v1.4.0 (2026-03-13)
+
+### New Features
+- **Discord instance + dedicated workspace**: Added the `discord-bot` instance pattern, dedicated `workspace-discord-bot/`, instance-aware startup scripts, Discord cron execution, and Discord command support for `!cron` and `!restart`.
+- **Multi-instance config model**: `gagaclaw.json` now supports `defaultInstance` + `instances`, so Telegram, Discord, and CLI can run as separate named instances from one config file.
+- **Per-instance bootstrap/header**: New `bootstrapPrompt` and `messageHeader` settings let each instance inject stable conversation context on first message and every message.
+- **Multi-cascade routing**: One Telegram chat, Discord channel/thread, or CLI session can map to its own `cascadeId`, making "1 conversation = 1 instance" practical.
+- **Discord MCP tools**: `gagaclaw_recommend_mcp` now includes Discord REST helpers in addition to the existing Groq and Telegram tools.
+
+### Improvements
+- **Cron schema unified**: Cron jobs now use `target` + `targetId` for Telegram, Discord, and CLI instead of older per-platform notification fields.
+- **Startup scripts target named instances**: `start-telegram.*` now runs `telegram-agent`; `start-discord.*` now runs `discord-bot`, so restart loops preserve the instance parameter.
+
+### Breaking Changes
+- **`rules.md` runtime workspace switching removed**: Workspace selection now relies on per-instance config plus workspace-local `soul.md` / `memory.md`, not `.agents/rules/rules.md`.
+- **Cron jobs require the new schema**: Use `target` and `targetId`. Older `notify.*` style jobs are no longer supported.
+
 ## v1.3.2 (2026-03-13)
 
 ### Bug Fixes

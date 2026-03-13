@@ -16,6 +16,8 @@ const {
     GatewayIntentBits,
     Partials,
 } = require('discord.js');
+const https = require('https');
+const cron = require('./cronjob');
 
 const {
     connectAndAuth,
@@ -47,15 +49,37 @@ const ADMIN_CHANNEL_ID = cfg.discord?.adminChannelId || '';
 const SESSION_MAP_PATH = path.join(__dirname, 'discord_sessions.json');
 function _loadSessionMap() { try { return JSON.parse(fs.readFileSync(SESSION_MAP_PATH, 'utf8')); } catch { return {}; } }
 function _saveSessionMap(map) { fs.writeFileSync(SESSION_MAP_PATH, JSON.stringify(map, null, 2) + '\n'); }
-// Atomic read-modify-write: read → get saved value → return it (for resume lookup)
+// Read current saved session mapping for this channel.
 function updateSessionMap(channelId) { return _loadSessionMap()[channelId] || null; }
-// Atomic read-modify-write: read → set → write (serialized per call)
+// Persist the active cascade mapping for this channel.
 function writeSessionMap(channelId, cascadeId) { const m = _loadSessionMap(); m[channelId] = cascadeId; _saveSessionMap(m); }
 function deleteSessionMap(channelId) { const m = _loadSessionMap(); delete m[channelId]; _saveSessionMap(m); }
 
 if (!DISCORD_TOKEN) {
     console.error('No Discord token. Set discord.token in gagaclaw.json or DISCORD_TOKEN env.');
     process.exit(1);
+}
+
+function getWorkspaceDownloadDir() {
+    const ws = cfg.activeWorkspace || 'workspace';
+    const wsDir = path.join(__dirname, ws, 'download');
+    if (!fs.existsSync(wsDir)) fs.mkdirSync(wsDir, { recursive: true });
+    return wsDir;
+}
+
+function downloadFile(url, destPath) {
+    return new Promise((resolve, reject) => {
+        https.get(url, res => {
+            if (res.statusCode !== 200) {
+                res.resume();
+                return reject(new Error('Failed to download: ' + res.statusCode));
+            }
+            const stream = fs.createWriteStream(destPath);
+            res.pipe(stream);
+            stream.on('finish', () => { stream.close(); resolve(destPath); });
+            stream.on('error', reject);
+        }).on('error', reject);
+    });
 }
 
 const MODEL_KEYS = Object.keys(MODELS).sort();
@@ -134,7 +158,7 @@ function canHandleConversationMessage(message, client) {
     const mentioned = message.mentions?.has(client.user) || false;
     const replied = isReplyToBot(message, client);
 
-    // Bot authors bypass allowedUsers — only require mention/reply + allowBotMentions
+    // Bot authors bypass allowedUsers; only require mention/reply + allowBotMentions.
     if (message.author.bot) {
         if (message.channel.type === ChannelType.DM) return false;
         return ALLOW_BOT_MENTIONS && (mentioned || replied);
@@ -182,6 +206,29 @@ function formatPermission(perm) {
     return `Permission required: ${perm.type}`;
 }
 
+function formatCronJobsForDiscord(jobs) {
+    if (!jobs || jobs.length === 0) {
+        return 'No cron jobs.\n\nEdit `cronjobs.json` to add jobs.';
+    }
+    const lines = [`**Cron Jobs (${jobs.length})**`];
+    for (const job of jobs) {
+        const status = job.enabled ? 'ON ' : 'OFF';
+        const nextStr = job.nextRun ? new Date(job.nextRun).toLocaleString('zh-TW') : '(pending)';
+        const prompt = String(job.prompt || '').replace(/\s+/g, ' ').trim();
+        const preview = prompt.length > 60 ? `${prompt.slice(0, 60)}...` : prompt;
+        const target = job.target || 'telegram';
+        const targetId = job.targetId ? ` -> ${job.targetId}` : '';
+        lines.push(`\`${job.id}\` ${status}`);
+        lines.push(`  cron: ${job.cron}`);
+        lines.push(`  next: ${nextStr}`);
+        lines.push(`  target: ${target}${targetId}`);
+        if (preview) lines.push(`  prompt: ${preview}`);
+    }
+    lines.push('');
+    lines.push(`Use \`${PREFIX}cron on <id>\` or \`${PREFIX}cron off <id>\`.`);
+    return lines.join('\n');
+}
+
 function createChannelState(channelId) {
     return {
         channelId,
@@ -198,6 +245,10 @@ function createChannelState(channelId) {
         lastResponseContent: '',
         thinkingTimer: null,
         responseTimer: null,
+        cronActive: null,
+        savedModel: null,
+        savedMode: null,
+        savedAgentic: null,
     };
 }
 
@@ -222,6 +273,8 @@ async function main() {
 
     const channelStates = new Map();
     const pendingPerms = new Map();
+    let cronPending = [];
+    let cronDrainPromise = null;
 
     function getState(channelId) {
         if (!channelStates.has(channelId)) {
@@ -405,7 +458,20 @@ async function main() {
         state.lastThinkingContent = '';
         state.lastResponseContent = '';
 
+        restoreCronState(state);
         dequeue(state);
+    }
+
+    function restoreCronState(state) {
+        if (!state.cronActive || !state.session) return;
+        if (state.savedModel) state.session.setModel(state.savedModel);
+        if (state.savedMode) state.session.setMode(state.savedMode);
+        if (state.savedAgentic !== null) state.session.setAgentic(state.savedAgentic);
+        dlog(`[cron restore] channel=${state.channelId} id=${state.cronActive.id} model=${state.savedModel} mode=${state.savedMode} agentic=${state.savedAgentic}`);
+        state.cronActive = null;
+        state.savedModel = null;
+        state.savedMode = null;
+        state.savedAgentic = null;
     }
 
     async function handlePermission(state, perm) {
@@ -486,6 +552,7 @@ async function main() {
             dlog(`[session error] channel=${state.channelId} ${msg}`);
             sendMessage(state.channelId, `Error: ${msg}`).catch(() => {});
             state.busy = false;
+            restoreCronState(state);
             dequeue(state);
         });
     }
@@ -510,7 +577,7 @@ async function main() {
                 });
                 if (mode !== 'polling') {
                     try { session.removeAllListeners(); session.destroy(); } catch {}
-                    throw new Error('discord.js only supports polling mode (Antigravity ≥1.20.5). Streaming detected.');
+                    throw new Error('discord.js only supports polling mode (Antigravity >=1.20.5). Streaming detected.');
                 }
                 // Only assign to state after transport is confirmed
                 state.session = session;
@@ -544,6 +611,10 @@ async function main() {
         state.requestMessageId = null;
         state.lastThinkingContent = '';
         state.lastResponseContent = '';
+        state.cronActive = null;
+        state.savedModel = null;
+        state.savedMode = null;
+        state.savedAgentic = null;
         if (state.thinkingMessageId) deleteMessage(state.channelId, state.thinkingMessageId).catch(() => {});
         if (state.responseMessageId) deleteMessage(state.channelId, state.responseMessageId).catch(() => {});
         state.thinkingMessageId = null;
@@ -571,10 +642,12 @@ async function main() {
         } catch (err) {
             state.busy = false;
             await sendMessage(state.channelId, `Error: ${err.message}`);
+            restoreCronState(state);
+            dequeue(state);
             return;
         }
 
-        const ok = await session.send(prompt);
+        const ok = await session.send(prompt, { source: 'discord' });
         if (!ok) {
             state.busy = false;
             if (state.thinkingMessageId) {
@@ -582,22 +655,106 @@ async function main() {
             } else {
                 await sendMessage(state.channelId, 'Failed to send message.');
             }
+            restoreCronState(state);
             dequeue(state);
         }
     }
 
     function enqueue(state, prompt, requestMessageId) {
-        state.queue.push({ prompt, requestMessageId });
+        state.queue.push({ kind: 'prompt', prompt, requestMessageId });
         sendTemp(state.channelId, `Queued (#${state.queue.length}).`, 15000).catch(() => {});
+    }
+
+    function enqueueCron(state, item) {
+        state.queue.push({ kind: 'cron', item });
+        sendTemp(state.channelId, `Queued cron job: ${item.id}`, 15000).catch(() => {});
+    }
+
+    async function processCronItem(state, item) {
+        let session;
+        try {
+            session = await ensureSession(state);
+        } catch (err) {
+            await sendMessage(state.channelId, `Cron error: ${err.message}`);
+            dequeue(state);
+            return;
+        }
+
+        state.cronActive = item;
+        state.savedModel = Object.entries(MODELS).find(([k, v]) => v.label === session.modelLabel)?.[0] || null;
+        state.savedMode = Object.entries(MODES).find(([k, v]) => v.label === session.modeLabel)?.[0] || null;
+        state.savedAgentic = session.agenticEnabled;
+
+        if (item.model) session.setModel(item.model);
+        if (item.mode) session.setMode(item.mode);
+        if (item.agentic !== null && item.agentic !== undefined) session.setAgentic(item.agentic);
+
+        dlog(`[cron run] channel=${state.channelId} id=${item.id} model=${item.model || 'current'} mode=${item.mode || 'current'} agentic=${item.agentic}`);
+        await sendMessage(state.channelId, `⏰ ${item.prompt}`);
+        await processPrompt(state, item.prompt, null);
     }
 
     function dequeue(state) {
         if (state.busy) return;
-        if (state.queue.length === 0) return;
-        const next = state.queue.shift();
-        processPrompt(state, next.prompt, next.requestMessageId).catch((err) => {
-            dlog(`[dequeue fail] channel=${state.channelId} err=${err.message}`);
+        if (state.queue.length > 0) {
+            const next = state.queue.shift();
+            if (next.kind === 'cron') {
+                processCronItem(state, next.item).catch((err) => {
+                    dlog(`[dequeue cron fail] channel=${state.channelId} err=${err.message}`);
+                });
+                return;
+            }
+            processPrompt(state, next.prompt, next.requestMessageId).catch((err) => {
+                dlog(`[dequeue fail] channel=${state.channelId} err=${err.message}`);
+            });
+            return;
+        }
+        processCronQueue().catch((err) => {
+            dlog(`[cron queue fail] ${err.message}`);
         });
+    }
+
+    async function dispatchCronItem(item) {
+        const channelId = String(item.targetId || '').trim();
+        if (!channelId) {
+            dlog(`[cron skip] id=${item.id} reason=no-targetId`);
+            return;
+        }
+        const channel = await getTextChannel(channelId);
+        if (!channel || typeof channel.send !== 'function') {
+            dlog(`[cron skip] id=${item.id} channel=${channelId} reason=channel-not-found`);
+            return;
+        }
+        if (!isAllowedChannel(channel)) {
+            dlog(`[cron skip] id=${item.id} channel=${channelId} reason=channel-not-allowed`);
+            return;
+        }
+        const state = getState(channelId);
+        if (state.busy || state.queue.length > 0) {
+            enqueueCron(state, item);
+            return;
+        }
+        await processCronItem(state, item);
+    }
+
+    async function processCronQueue() {
+        if (cronDrainPromise) return cronDrainPromise;
+        cronDrainPromise = (async () => {
+        if (cronPending.length === 0) {
+            cronPending.push(...cron.consumeQueue('discord'));
+        }
+        if (cronPending.length === 0) return;
+
+        while (cronPending.length > 0) {
+            const item = cronPending.shift();
+            await dispatchCronItem(item);
+        }
+        })();
+        try {
+            await cronDrainPromise;
+        } finally {
+            cronDrainPromise = null;
+        }
     }
 
     async function handleCommand(message, state, rawText) {
@@ -610,18 +767,21 @@ async function main() {
         case `${PREFIX}help`:
             await sendMessage(message.channel.id, [
                 `**${APP_NAME} Discord Bot v${LOCAL_VERSION}**`,
-                `\`${PREFIX}new\` — New conversation`,
-                `\`${PREFIX}restart [cold]\` — Restart bot`,
-                `\`${PREFIX}stop\` — Stop current turn`,
-                `\`${PREFIX}list\` — List conversations`,
-                `\`${PREFIX}switch N\` — Switch to conversation #N`,
-                `\`${PREFIX}delete N\` — Delete conversation #N`,
-                `\`${PREFIX}status\` — Show session settings`,
+                `\`${PREFIX}new\` - New conversation`,
+                `\`${PREFIX}restart [cold]\` - Restart bot`,
+                `\`${PREFIX}stop\` - Stop current turn`,
+                `\`${PREFIX}list\` - List conversations`,
+                `\`${PREFIX}switch N\` - Switch to conversation #N`,
+                `\`${PREFIX}delete N\` - Delete conversation #N`,
+                `\`${PREFIX}status\` - Show session settings`,
                 `\`${PREFIX}model <${MODEL_KEYS.join('|')}>\``,
                 `\`${PREFIX}mode <${MODE_KEYS.join('|')}>\``,
                 `\`${PREFIX}agentic <on|off>\``,
                 `\`${PREFIX}yolo <on|off>\``,
-                `\`${PREFIX}usage\` — Model quota & usage`,
+                `\`${PREFIX}usage\` - Model quota & usage`,
+                `\`${PREFIX}cron\` - List cron jobs`,
+                `\`${PREFIX}cron on <id>\` - Enable cron job`,
+                `\`${PREFIX}cron off <id>\` - Disable cron job`,
                 '',
                 'Guild channels require mention or reply for both commands and chat by default.',
             ].join('\n'));
@@ -632,6 +792,7 @@ async function main() {
             await destroySession(state);
             deleteSessionMap(state.channelId);
             await ensureSession(state);
+            state.session.markBootstrapPending(true);
             await sendMessage(message.channel.id, `New conversation: ${state.session.cascadeId.slice(0, 8)}...`);
             return true;
 
@@ -661,6 +822,7 @@ async function main() {
             await session.stop();
             state.busy = false;
             state.queue = [];
+            restoreCronState(state);
             clearRenderTimers(state);
             if (state.thinkingMessageId) deleteMessage(state.channelId, state.thinkingMessageId).catch(() => {});
             if (state.responseMessageId) deleteMessage(state.channelId, state.responseMessageId).catch(() => {});
@@ -729,9 +891,9 @@ async function main() {
             const list = await session.listCascades();
             if (list.length === 0) { await sendMessage(message.channel.id, 'No conversations.'); return true; }
             const lines = list.slice(0, 15).map((e, i) => {
-                const cur = e.id === session.cascadeId ? ' ◀' : '';
+                const cur = e.id === session.cascadeId ? ' <=' : '';
                 const ttl = (e.summary || '(untitled)').slice(0, 50);
-                return `\`${i + 1}\` ${e.id.slice(0, 8)}… ${ttl}${cur}`;
+                return `\`${i + 1}\` ${e.id.slice(0, 8)}... ${ttl}${cur}`;
             });
             await sendMessage(message.channel.id, `**Conversations (${list.length})**\n${lines.join('\n')}`);
             state._lastList = list;
@@ -751,7 +913,7 @@ async function main() {
             session.switchCascade(target.id);
             writeSessionMap(state.channelId, target.id);
             const ttl = (target.summary || '(untitled)').slice(0, 50);
-            await sendMessage(message.channel.id, `Switched: ${target.id.slice(0, 8)}… — ${ttl}`);
+            await sendMessage(message.channel.id, `Switched: ${target.id.slice(0, 8)}... - ${ttl}`);
             return true;
         }
 
@@ -766,7 +928,7 @@ async function main() {
             const target = list[num - 1];
             const ok = await session.deleteCascade(target.id);
             if (ok) {
-                await sendMessage(message.channel.id, `Deleted: ${target.id.slice(0, 8)}…`);
+                await sendMessage(message.channel.id, `Deleted: ${target.id.slice(0, 8)}...`);
                 if (target.id === session.cascadeId) {
                     await destroySession(state);
                     deleteSessionMap(state.channelId);
@@ -782,7 +944,7 @@ async function main() {
             session = session || await ensureSession(state);
             try {
                 const info = await getUsage(session.auth);
-                const lines = [`**📊 Model Usage**\nTier: **${info.userTier}**\n`];
+                const lines = [`**Model Usage**\nTier: **${info.userTier}**\n`];
                 if (info.models.length === 0) {
                     lines.push('No per-model quota data available.');
                 } else {
@@ -790,16 +952,48 @@ async function main() {
                         const pct = m.pct !== null ? m.pct : null;
                         const pctStr = pct !== null ? `${pct}%` : '?';
                         const barLen = pct !== null ? Math.round(pct / 10) : 0;
-                        const bar = pct !== null ? ' `' + '█'.repeat(barLen) + '░'.repeat(10 - barLen) + '`' : '';
-                        const icon = pct === null ? '❔' : pct > 50 ? '🟢' : pct > 20 ? '🟡' : '🔴';
-                        const reset = m.resetTime ? `\n  ⏰ Reset: ${new Date(m.resetTime).toLocaleString('zh-TW')}` : '';
+                        const bar = pct !== null ? ' `' + '#'.repeat(barLen) + '-'.repeat(10 - barLen) + '`' : '';
+                        const icon = pct === null ? '?' : pct > 50 ? 'HIGH' : pct > 20 ? 'MID' : 'LOW';
+                        const reset = m.resetTime ? '\n  Reset: ' + new Date(m.resetTime).toLocaleString('zh-TW') : '';
                         lines.push(`${icon} **${m.label}**\n  Remaining: ${pctStr}${bar}${reset}`);
                     }
                 }
                 await sendMessage(message.channel.id, lines.join('\n'));
             } catch (e) {
-                await sendMessage(message.channel.id, `❌ Usage fetch failed: ${e.message}`);
+                await sendMessage(message.channel.id, `Usage fetch failed: ${e.message}`);
             }
+            return true;
+        }
+
+        case `${PREFIX}cron`: {
+            const args = arg.split(/\s+/).filter(Boolean);
+            const sub = (args[0] || '').toLowerCase();
+            const jobId = args.slice(1).join(' ').trim();
+
+            if (!sub) {
+                const jobs = cron.listAllJobs();
+                await sendMessage(message.channel.id, formatCronJobsForDiscord(jobs));
+                return true;
+            }
+            if (sub === 'on') {
+                if (!jobId) {
+                    await sendMessage(message.channel.id, `Usage: ${PREFIX}cron on <id>`);
+                    return true;
+                }
+                const result = cron.toggleJob(jobId, true);
+                await sendMessage(message.channel.id, result.ok ? result.msg : `Error: ${result.msg}`);
+                return true;
+            }
+            if (sub === 'off') {
+                if (!jobId) {
+                    await sendMessage(message.channel.id, `Usage: ${PREFIX}cron off <id>`);
+                    return true;
+                }
+                const result = cron.toggleJob(jobId, false);
+                await sendMessage(message.channel.id, result.ok ? result.msg : `Error: ${result.msg}`);
+                return true;
+            }
+            await sendMessage(message.channel.id, `Usage: ${PREFIX}cron · ${PREFIX}cron on <id> · ${PREFIX}cron off <id>`);
             return true;
         }
 
@@ -812,11 +1006,15 @@ async function main() {
     client.once(Events.ClientReady, async (readyClient) => {
         console.log(`Discord ready as ${readyClient.user.tag}`);
         dlog(`[ready] ${readyClient.user.tag}`);
+        const stale = cron.consumeQueue('discord');
+        if (stale.length > 0) {
+            dlog(`[cron] Cleared ${stale.length} stale queue item(s) on startup`);
+        }
         if (ADMIN_CHANNEL_ID) {
-            sendMessage(ADMIN_CHANNEL_ID, `✅ Gagaclaw v${LOCAL_VERSION} started\nBot: ${readyClient.user.tag}\nAuth: LS port ${auth.lsPort}`).catch(() => {});
+            sendMessage(ADMIN_CHANNEL_ID, `Gagaclaw v${LOCAL_VERSION} started\nBot: ${readyClient.user.tag}\nAuth: LS port ${auth.lsPort}`).catch(() => {});
             checkUpdate().then((v) => {
                 if (v.upToDate === false) {
-                    sendMessage(ADMIN_CHANNEL_ID, `⬆️ Update: **v${v.local}** → **v${v.remote}**\nRun \`git pull\` to update.`).catch(() => {});
+                    sendMessage(ADMIN_CHANNEL_ID, `Update: **v${v.local}** -> **v${v.remote}**\nRun \`git pull\` to update.`).catch(() => {});
                 }
             }).catch(() => {});
         }
@@ -824,14 +1022,35 @@ async function main() {
 
     client.on(Events.MessageCreate, async (message) => {
         try {
-            if (!message.content) return;
+            const rawContent = String(message.content || '');
+            if (!rawContent.trim() && (!message.attachments || message.attachments.size === 0)) return;
             if (!isAllowedChannel(message.channel)) return;
-
             const state = getState(message.channel.id);
-            const strippedContent = stripOwnMention(message.content, client.user.id);
-            const commandText = strippedContent.startsWith(PREFIX)
-                ? strippedContent
-                : (message.content.startsWith(PREFIX) ? message.content : '');
+            const strippedContent = stripOwnMention(rawContent, client.user.id);
+            const isCommand = strippedContent.startsWith(PREFIX) || rawContent.startsWith(PREFIX);
+            const commandText = isCommand ? (strippedContent.startsWith(PREFIX) ? strippedContent : rawContent) : '';
+            
+            let prompt = strippedContent;
+
+            // Handle attachments
+            if (message.attachments && message.attachments.size > 0 && !isCommand) {
+                const downloadDir = getWorkspaceDownloadDir();
+                const downloadedFiles = [];
+                for (const [id, att] of message.attachments) {
+                    try {
+                        const safeName = String(att.name || ('attachment-' + id)).replace(/[^a-zA-Z0-9._-]/g, '_');
+                        const dest = path.join(downloadDir, `${id}_${safeName}`);
+                        await downloadFile(att.url, dest);
+                        downloadedFiles.push(dest);
+                    } catch (e) {
+                        dlog(`[download fail] ${att.name || id}: ${e.message}`);
+                    }
+                }
+                if (downloadedFiles.length > 0) {
+                    const pathsList = downloadedFiles.map(p => `"${p}"`).join('\n');
+                    prompt += `\n\n[Attached Files]:\n${pathsList}`;
+                }
+            }
 
             if (commandText) {
                 if (!canHandleCommandMessage(message, client)) return;
@@ -841,8 +1060,7 @@ async function main() {
 
             if (!canHandleConversationMessage(message, client)) return;
 
-            const prompt = strippedContent;
-            if (!prompt) return;
+            if (!prompt.trim() && !(message.attachments && message.attachments.size > 0)) return;
 
             if (state.busy) {
                 enqueue(state, prompt, message.id);
@@ -917,6 +1135,15 @@ async function main() {
     });
 
     await client.login(DISCORD_TOKEN);
+
+    setInterval(() => {
+        for (const state of channelStates.values()) {
+            if (!state.busy) dequeue(state);
+        }
+        processCronQueue().catch((err) => {
+            dlog(`[cron queue fail] ${err.message}`);
+        });
+    }, 30000);
 }
 
 main().catch((err) => {

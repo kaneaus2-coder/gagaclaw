@@ -5,16 +5,37 @@ const fs = require("fs");
 const path = require("path");
 const https = require("https");
 const FormData = require("form-data");
+const { discordTools, handleDiscordTool } = require("./discord-related");
 
 const configPath = path.join(__dirname, "..", "gagaclaw.json");
 let config = {};
-try { config = JSON.parse(fs.readFileSync(configPath, "utf8")); } catch (err) { process.exit(1); }
+try { config = JSON.parse(fs.readFileSync(configPath, "utf8").replace(/^\uFEFF/, "")); } catch (err) { process.exit(1); }
 
-const tgToken = config.telegram?.token;
-const tgChatId = config.telegram?.adminChatId || (config.telegram?.allowedUsers || [])[0];
+function getInstances(raw) {
+    return raw && raw.instances && typeof raw.instances === "object" ? raw.instances : {};
+}
+
+function pickConfigWithKey(raw, key, preferredNames = []) {
+    if (raw && raw[key]) return raw;
+    const instances = getInstances(raw);
+    for (const name of preferredNames) {
+        if (instances[name] && instances[name][key]) return instances[name];
+    }
+    if (typeof raw.defaultInstance === "string" && instances[raw.defaultInstance]?.[key]) {
+        return instances[raw.defaultInstance];
+    }
+    for (const inst of Object.values(instances)) {
+        if (inst && inst[key]) return inst;
+    }
+    return {};
+}
+
+const telegramCfg = pickConfigWithKey(config, "telegram", ["telegram-agent", "main"]);
+const tgToken = telegramCfg.telegram?.token || "";
+const tgChatId = telegramCfg.telegram?.adminChatId || (telegramCfg.telegram?.allowedUsers || [])[0];
 const groqApiKey = config.groq?.apiKey;
 
-const server = new Server({ name: "gagaclaw_recommend_mcp", version: "1.1.0" }, { capabilities: { tools: {} } });
+const server = new Server({ name: "gagaclaw_recommend_mcp", version: "1.2.0" }, { capabilities: { tools: {} } });
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: [
@@ -27,7 +48,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
             name: "telegram_send_file",
             description: "Send file to Telegram admin. Auto-converts .md to .html.",
             inputSchema: { type: "object", properties: { filePath: { type: "string" } }, required: ["filePath"] }
-        }
+        },
+        ...discordTools
     ]
 }));
 
@@ -85,7 +107,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 return { content: [{ type: "text", text: `Success: ${result}` }] };
             } catch (err) { return { content: [{ type: "text", text: err.message }], isError: true }; }
         }
-        default: throw new Error("Unknown tool");
+        default: {
+            // Route discord_* tools to discord-related handler
+            if (request.params.name.startsWith("discord_")) {
+                return await handleDiscordTool(request.params.name, request.params.arguments);
+            }
+            throw new Error("Unknown tool");
+        }
     }
 });
 

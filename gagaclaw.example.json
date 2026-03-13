@@ -1,30 +1,15 @@
 {
-    "telegram": {
-        "token": "PASTE_YOUR_BOT_TOKEN_HERE",
-        "allowedUsers": [0],
-        "adminChatId": 0
-    },
-    "discord": {
-        "token": "PASTE_YOUR_DISCORD_BOT_TOKEN_HERE",
-        "allowedUsers": [0],
-        "allowedGuilds": [0],
-        "allowedChannels": [0],
-        "prefix": "!",
-        "requireMentionInGuilds": true,
-        "allowBotMentions": true,
-        "adminChannelId": "PASTE_ADMIN_CHANNEL_ID_HERE"
-    },
     "app": {
         "name": "Antigravity",
         "targetExecutables": [
             "Antigravity.exe"
         ]
     },
-    "activeWorkspace": "workspace",
-    "yoloMode": false,
     "groq": {
         "apiKey": "PASTE_YOUR_GROQ_API_KEY_HERE"
     },
+    "defaultInstance": "telegram-agent",
+    "yoloMode": false,
     "defaults": {
         "model": "MODEL_PLACEHOLDER_M37",
         "mode": "planning",
@@ -33,5 +18,38 @@
             9229
         ],
         "cdpHost": "127.0.0.1"
+    },
+    "instances": {
+        "telegram-agent": {
+            "telegram": {
+                "token": "PASTE_YOUR_BOT_TOKEN_HERE",
+                "allowedUsers": [
+                    0
+                ],
+                "adminChatId": 0
+            },
+            "activeWorkspace": "workspace",
+            "bootstrapPrompt": "You are the `telegram-agent` instance. Use `workspace` as the primary workspace for this conversation.",
+            "messageHeader": "[instance=telegram-agent workspace=workspace]"
+        },
+        "discord-bot": {
+            "discord": {
+                "token": "PASTE_YOUR_RESEARCH_DISCORD_BOT_TOKEN_HERE",
+                "allowedUsers": [
+                    0
+                ],
+                "allowedGuilds": [
+                    0
+                ],
+                "allowedChannels": [],
+                "prefix": "!",
+                "requireMentionInGuilds": true,
+                "allowBotMentions": true,
+                "adminChannelId": "PASTE_RESEARCH_ADMIN_CHANNEL_ID_HERE"
+            },
+            "activeWorkspace": "workspace-discord-bot",
+            "bootstrapPrompt": "You are the `discord-bot` instance. Use `workspace-discord-bot` as the primary workspace for this conversation.",
+            "messageHeader": "[instance=discord-bot workspace=workspace-discord-bot]"
+        }
     }
 }

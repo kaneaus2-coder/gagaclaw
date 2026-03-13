@@ -11,13 +11,13 @@ ensure_antigravity() {
 
 ensure_antigravity
 
-echo "[start] Starting Discord bot..."
+echo "[start] Starting Discord bot (discord-bot)..."
 while true; do
-    node discord.js
+    node discord.js discord-bot
     EXIT_CODE=$?
     if [ "$EXIT_CODE" -eq 42 ]; then
         echo ""
-        echo "[Restart] Restarting discord.js..."
+        echo "[Restart] Restarting discord.js discord-bot..."
         echo ""
         ensure_antigravity
     else

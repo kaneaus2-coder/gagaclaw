@@ -1,9 +1,9 @@
 @echo off
 :loop
-node discord.js
+node discord.js discord-bot
 if %ERRORLEVEL% == 42 (
     echo.
-    echo [Restart] Restarting discord.js...
+    echo [Restart] Restarting discord.js discord-bot...
     echo.
     goto loop
 )

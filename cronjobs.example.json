@@ -1,19 +1,20 @@
-{
+﻿{
     "_doc": [
         "Gagaclaw Cron Job Configuration",
         "",
         "Fields:",
-        "  id       — Unique identifier (string)",
-        "  enabled  — Enable/disable (true/false)",
-        "  cron     — Cron expression: min hour day month weekday (e.g., '*/5 * * * *' = every 5 min, '0 9 * * *' = daily 09:00)",
-        "  prompt   — The message/prompt to send",
-        "  model    — flash / low / high / opus / sonnet / gpt (omit to use gagaclaw.json defaults)",
-        "  mode     — planning / fast (omit to use defaults)",
-        "  agentic  — true/false enable tool usage (omit to use defaults)",
-        "  cascadeId — Reuse this conversation; null = create new each time",
-        "  notify   — Notification target: { \"telegram\": chatId } and/or { \"file\": \"path\" }",
-        "  note     — Human-readable note (ignored by code)",
-        "  nextRun  — Auto-calculated by cron.js, do not edit manually",
+        "  id       - Unique identifier (string)",
+        "  enabled  - Enable/disable (true/false)",
+        "  cron     - Cron expression: min hour day month weekday (e.g., '*/5 * * * *' = every 5 min, '0 9 * * *' = daily 09:00)",
+        "  prompt   - The message/prompt to send",
+        "  model    - flash / low / high / opus / sonnet / gpt (omit to use gagaclaw.json defaults)",
+        "  mode     - planning / fast (omit to use defaults)",
+        "  agentic  - true/false enable tool usage (omit to use defaults)",
+        "  cascadeId - Reuse this conversation; null = create new each time",
+        "  target   - Which consumer should execute it: \"telegram\" / \"discord\" / \"cli\"",
+        "  targetId - Target chat/channel ID. Telegram = chatId, Discord = channelId, CLI = omit",
+        "  note     - Human-readable note (ignored by code)",
+        "  nextRun  - Auto-calculated by cron.js, do not edit manually",
         "",
         "Cron expression cheat sheet:",
         "  */5 * * * *     Every 5 minutes",
@@ -33,9 +34,8 @@
             "model": "high",
             "mode": "fast",
             "agentic": true,
-            "notify": {
-                "telegram": 0
-            }
+            "target": "telegram",
+            "targetId": "0"
         }
     ]
 }

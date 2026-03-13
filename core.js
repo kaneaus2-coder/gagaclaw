@@ -13,13 +13,133 @@ const { execSync } = require('child_process');
 const { EventEmitter } = require('events');
 
 // ─── Config (gagaclaw.json) ──────────────────────────────────────────────────
-const CONFIG_PATH = path.join(__dirname, 'gagaclaw.json');
+const DEFAULT_CONFIG_PATH = path.join(__dirname, 'gagaclaw.json');
+
+function isPlainObject(value) {
+    return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function deepClone(value) {
+    return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
+}
+
+function deepMerge(base, override) {
+    if (!isPlainObject(base)) return deepClone(override);
+    const out = { ...base };
+    for (const [key, value] of Object.entries(override || {})) {
+        if (isPlainObject(value) && isPlainObject(base[key])) out[key] = deepMerge(base[key], value);
+        else out[key] = deepClone(value);
+    }
+    return out;
+}
+
+function diffOverride(base, effective) {
+    if (JSON.stringify(base) === JSON.stringify(effective)) return undefined;
+    if (Array.isArray(effective)) return deepClone(effective);
+    if (!isPlainObject(effective)) return deepClone(effective);
+
+    const out = {};
+    for (const key of Object.keys(effective)) {
+        const child = diffOverride(base?.[key], effective[key]);
+        if (child !== undefined) out[key] = child;
+    }
+    return Object.keys(out).length > 0 ? out : {};
+}
+
+function parseConfigArgs(argv = process.argv.slice(2)) {
+    let configPath = DEFAULT_CONFIG_PATH;
+    let explicitInstance = null;
+
+    for (let i = 0; i < argv.length; i++) {
+        const arg = argv[i];
+        if (arg === '--config' && argv[i + 1]) {
+            configPath = path.resolve(process.cwd(), argv[++i]);
+            continue;
+        }
+        if (arg.startsWith('--config=')) {
+            configPath = path.resolve(process.cwd(), arg.slice('--config='.length));
+            continue;
+        }
+        if (arg === '--instance' && argv[i + 1]) {
+            explicitInstance = argv[++i];
+            continue;
+        }
+        if (arg.startsWith('--instance=')) {
+            explicitInstance = arg.slice('--instance='.length);
+            continue;
+        }
+        if (arg.startsWith('--')) continue;
+        if (!explicitInstance) explicitInstance = arg;
+    }
+
+    return { configPath, explicitInstance };
+}
+
+const CONFIG_ARGS = parseConfigArgs();
+
+function readRawConfig() {
+    try {
+        const text = fs.readFileSync(CONFIG_ARGS.configPath, 'utf8').replace(/^\uFEFF/, '');
+        return JSON.parse(text);
+    } catch {
+        return {};
+    }
+}
+
+function writeRawConfig(raw) {
+    fs.writeFileSync(CONFIG_ARGS.configPath, JSON.stringify(raw, null, 4) + '\n');
+}
+
+function selectInstanceName(raw) {
+    const instances = isPlainObject(raw.instances) ? raw.instances : {};
+    if (CONFIG_ARGS.explicitInstance) {
+        if (!instances[CONFIG_ARGS.explicitInstance]) {
+            throw new Error(`Config instance not found: ${CONFIG_ARGS.explicitInstance}`);
+        }
+        return CONFIG_ARGS.explicitInstance;
+    }
+    if (typeof raw.defaultInstance === 'string' && instances[raw.defaultInstance]) {
+        return raw.defaultInstance;
+    }
+    const first = Object.keys(instances)[0];
+    return first || null;
+}
+
+function attachConfigMeta(cfg, instanceName) {
+    if (!isPlainObject(cfg)) cfg = {};
+    Object.defineProperty(cfg, '__configPath', { value: CONFIG_ARGS.configPath, enumerable: false });
+    Object.defineProperty(cfg, '__instanceName', { value: instanceName, enumerable: false });
+    return cfg;
+}
 
 function loadConfig() {
-    try { return JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8')); } catch { return {}; }
+    const raw = readRawConfig();
+    const base = deepClone(raw) || {};
+    delete base.instances;
+
+    const instanceName = selectInstanceName(raw);
+    if (!instanceName) return attachConfigMeta(base, null);
+
+    const instanceCfg = raw.instances?.[instanceName];
+    const merged = deepMerge(base, instanceCfg || {});
+    return attachConfigMeta(merged, instanceName);
 }
+
 function saveConfig(cfg) {
-    fs.writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 4) + '\n');
+    const cleanCfg = deepClone(cfg) || {};
+    const raw = readRawConfig();
+    const instanceName = cfg?.__instanceName ?? selectInstanceName(raw);
+
+    if (!instanceName) {
+        writeRawConfig(cleanCfg);
+        return;
+    }
+
+    const base = deepClone(raw) || {};
+    delete base.instances;
+    if (!isPlainObject(raw.instances)) raw.instances = {};
+    raw.instances[instanceName] = diffOverride(base, cleanCfg) || {};
+    writeRawConfig(raw);
 }
 
 const MODELS = {
@@ -605,13 +725,17 @@ async function captureAuth(browser, page, logger) {
 class Session extends EventEmitter {
     constructor(auth) {
         super();
+        const cfg = loadConfig();
         this.auth = auth;
         this.cascadeId = '';
         this.currentModelId = getConfigModel();
         this.cascadeConfig = auth.cascadeConfig || { plannerConfig: { requestedModel: {} }, modelConfig: {} };
         this.currentMode = getConfigMode();
         this.agenticEnabled = getConfigAgentic();
-        this.yoloMode = loadConfig().yoloMode || false;
+        this.yoloMode = cfg.yoloMode || false;
+        this.bootstrapPrompt = String(cfg.bootstrapPrompt || '').trim();
+        this.messageHeader = String(cfg.messageHeader || '').trim();
+        this._bootstrapPending = false;
 
         // Stream state
         this._latestTrajectoryId = null;
@@ -621,8 +745,8 @@ class Session extends EventEmitter {
         this._lastThinking = '';
         this._lastResponse = '';
         this._lastSeenToolCall = null;
-        this._pendingToolCall = null;
-        this._pendingPermTimer = null;  // debounce timer for WAITING approval
+        this._pendingToolCalls = new Map();  // permKey -> permission payload
+        this._pendingPermTimers = new Map();  // permKey -> debounce timer
         this._awaitingResponse = false;
         this._stream = null;
         this._agentStateStream = null;
@@ -641,7 +765,7 @@ class Session extends EventEmitter {
         this._pollLastThinkingLen = 0;
         this._pollLastResponseLen = 0;
         this._pollSendStepCount = 0;  // step count at send() time — ignore older steps
-        this._pollApprovedSteps = new Set();  // step indices already approved — skip on next poll
+        this._pollApprovedSteps = new Set();  // permKeys already emitted/approved — skip on next poll
         this._pollEmittedToolCalls = new Set();  // tool call keys already emitted
 
         this._applyModel();
@@ -726,16 +850,62 @@ class Session extends EventEmitter {
         return nodePost(this.auth.lsPort, 'CancelCascadeInvocation', { cascadeId: this.cascadeId }, this.auth.csrfToken, this.auth.cdpHost);
     }
 
+    markBootstrapPending(val = true) {
+        this._bootstrapPending = !!val;
+    }
+
+    _buildOutgoingUserText(userText, opts = {}) {
+        const text = String(userText || '').trim();
+        const source = String(opts.source || '').trim();
+        const blocks = [];
+
+        if (source) blocks.push(`[source: ${source}]`);
+        if (this.messageHeader) blocks.push(this.messageHeader);
+        if (this._bootstrapPending && this.bootstrapPrompt) blocks.push(this.bootstrapPrompt);
+        blocks.push(text);
+        return blocks.filter(Boolean).join('\n\n');
+    }
+
     switchCascade(id) {
         this.cascadeId = id;
+        this._bootstrapPending = false;
         this._pollLastNumSteps = 0;
         this._pollLastThinkingLen = 0;
         this._pollLastResponseLen = 0;
+        this._pollApprovedSteps.clear();
+        this._pollEmittedToolCalls.clear();
+        this._clearAllPendingPermissions();
         this._lastAgentStatus = null;
         this._lastAgentExecutableStatus = null;
         this._lastAgentExecutorLoopStatus = null;
         this._agentStateTurnActive = false;
         this.openStream();
+    }
+
+    _permKey(trajId, stepIndex) {
+        return `${trajId || ''}:${stepIndex}`;
+    }
+
+    _hasPendingToolCalls() {
+        return this._pendingToolCalls.size > 0;
+    }
+
+    _clearPendingPermissionByKey(key) {
+        const timer = this._pendingPermTimers.get(key);
+        if (timer) clearTimeout(timer);
+        this._pendingPermTimers.delete(key);
+        this._pendingToolCalls.delete(key);
+    }
+
+    _clearPendingPermission(perm) {
+        if (!perm) return;
+        this._clearPendingPermissionByKey(this._permKey(perm._trajectoryId, perm._stepIndex));
+    }
+
+    _clearAllPendingPermissions() {
+        for (const timer of this._pendingPermTimers.values()) clearTimeout(timer);
+        this._pendingPermTimers.clear();
+        this._pendingToolCalls.clear();
     }
 
     _isRunningRunStatus(runStatus) {
@@ -747,7 +917,7 @@ class Session extends EventEmitter {
     }
 
     _finishTurn() {
-        if (!this._awaitingResponse || this._pendingToolCall) return false;
+        if (!this._awaitingResponse || this._hasPendingToolCalls()) return false;
         pktWrite(`FINISH_TURN respLen=${(this._lastResponse||'').length} thinkLen=${(this._lastThinking||'').length} serverErr=${!!this._lastServerError}`);
         if (!this._lastResponse && !this._lastThinking && this._lastServerError) {
             this.emit('error', this._lastServerError);
@@ -809,7 +979,7 @@ class Session extends EventEmitter {
 
         if (
             this._awaitingResponse &&
-            !this._pendingToolCall &&
+            !this._hasPendingToolCalls() &&
             this._agentStateTurnActive &&
             this._isRunningRunStatus(prevStatus) &&
             this._isIdleRunStatus(status)
@@ -925,7 +1095,7 @@ class Session extends EventEmitter {
         }
 
         if (!this._awaitingResponse) return;
-        if (this._pendingToolCall) return;
+        if (this._hasPendingToolCalls()) return;
 
         // Thinking deltas
         for (const t of info.thinking) {
@@ -958,45 +1128,49 @@ class Session extends EventEmitter {
         }
         // Permission: triggered by WAITING status (enumValue:9)
         // Resolve stepType from map if not in current diff (protobuf only sends changed fields)
-        if (info.permissionWait && !this._pendingToolCall) {
+        if (info.permissionWait) {
             const stepIdx = info.stepIndex !== null ? info.stepIndex : this._latestStepIndex;
             const resolvedType = info.permStepType ?? this._stepTypeMap.get(stepIdx) ?? null;
             if (resolvedType === null) {
                 pktWrite(`PERM_SKIP stepIndex=${stepIdx} (no stepType in diff or map — likely false positive)`);
             } else {
-            const trajId = info.trajectoryId || this._latestTrajectoryId;
-            const lastTc = this._lastSeenToolCall || {};
-            // Re-resolve permissionWait using cached stepType/path only when walk() fell back to browser
-            const cachedPath = this._stepPathMap.get(stepIdx) ?? null;
-            if (info.permissionWait === 'browser') {
-                if (resolvedType === 21) info.permissionWait = 'run_command';
-                else if (resolvedType === 38) info.permissionWait = 'mcp';
-                else if (info.permissionPath || cachedPath) info.permissionWait = 'file';
-                // else: stays 'browser'
-            }
-            if (!info.permissionPath && cachedPath) info.permissionPath = cachedPath;
-            const perm = {
-                type: info.permissionWait,
-                contextTool: lastTc,
-                permissionPath: info.permissionPath,
-                CommandLine: info.permissionCmd || lastTc.CommandLine,
-                _trajectoryId: trajId,
-                _stepIndex: stepIdx,
-            };
-            this._pendingToolCall = perm;
-            pktWrite(`PERM_DETECT type=${info.permissionWait} stepIndex=${stepIdx} trajId=${trajId} cmd=${info.permissionCmd} path=${info.permissionPath}`);
-            // Debounce: wait 1s before emitting — server sometimes auto-resolves WAITING
-            if (this._pendingPermTimer) { clearTimeout(this._pendingPermTimer); this._pendingPermTimer = null; }
-            this._pendingPermTimer = setTimeout(() => {
-                this._pendingPermTimer = null;
-                if (this._pendingToolCall === perm) {
-                    pktWrite(`PERM_DEBOUNCE_FIRE stepIndex=${stepIdx}`);
-                    this._emitPermission(perm);
-                } else {
-                    pktWrite(`PERM_DEBOUNCE_SKIP stepIndex=${stepIdx} (superseded)`);
+                const trajId = info.trajectoryId || this._latestTrajectoryId;
+                const permKey = this._permKey(trajId, stepIdx);
+                if (this._pendingToolCalls.has(permKey)) return;
+                const lastTc = this._lastSeenToolCall || {};
+                // Re-resolve permissionWait using cached stepType/path only when walk() fell back to browser
+                const cachedPath = this._stepPathMap.get(stepIdx) ?? null;
+                if (info.permissionWait === 'browser') {
+                    if (resolvedType === 21) info.permissionWait = 'run_command';
+                    else if (resolvedType === 38) info.permissionWait = 'mcp';
+                    else if (info.permissionPath || cachedPath) info.permissionWait = 'file';
+                    // else: stays 'browser'
                 }
-            }, 1000);
-            return;
+                if (!info.permissionPath && cachedPath) info.permissionPath = cachedPath;
+                const perm = {
+                    type: info.permissionWait,
+                    contextTool: lastTc,
+                    permissionPath: info.permissionPath,
+                    CommandLine: info.permissionCmd || lastTc.CommandLine,
+                    _trajectoryId: trajId,
+                    _stepIndex: stepIdx,
+                };
+                this._pendingToolCalls.set(permKey, perm);
+                pktWrite(`PERM_DETECT type=${info.permissionWait} stepIndex=${stepIdx} trajId=${trajId} cmd=${info.permissionCmd} path=${info.permissionPath}`);
+                // Debounce: wait 1s before emitting; server sometimes auto-resolves WAITING
+                const oldTimer = this._pendingPermTimers.get(permKey);
+                if (oldTimer) clearTimeout(oldTimer);
+                const timer = setTimeout(() => {
+                    this._pendingPermTimers.delete(permKey);
+                    if (this._pendingToolCalls.get(permKey) === perm) {
+                        pktWrite(`PERM_DEBOUNCE_FIRE stepIndex=${stepIdx}`);
+                        this._emitPermission(perm);
+                    } else {
+                        pktWrite(`PERM_DEBOUNCE_SKIP stepIndex=${stepIdx} (superseded)`);
+                    }
+                }, 1000);
+                this._pendingPermTimers.set(permKey, timer);
+                return;
             }
         }
         // New step in the legacy stream resets per-step delta tracking.
@@ -1062,7 +1236,7 @@ class Session extends EventEmitter {
                 interaction: { trajectoryId: perm._trajectoryId, stepIndex: perm._stepIndex, mcp: { confirm: allowed } }
             };
         } else {
-            this._pendingToolCall = null;
+            this._clearPendingPermission(perm);
             this.emit('error', `Unknown permission type: ${perm.type}`);
             return;
         }
@@ -1101,7 +1275,8 @@ class Session extends EventEmitter {
             this._pollLastThinkingLen = 0;
             this._pollLastResponseLen = 0;
         }
-        this._pendingToolCall = null;
+        if (res.status !== 200) this._pollApprovedSteps.delete(this._permKey(perm._trajectoryId, perm._stepIndex));
+        this._clearPendingPermission(perm);
         this.emit('permissionResolved');
         return res.status === 200;
     }
@@ -1180,15 +1355,23 @@ class Session extends EventEmitter {
         this._latestStepIndex = numSteps - 1;
 
         if (!this._awaitingResponse) return;
-        if (this._pendingToolCall) return;
+
+        const trajId = data.trajectory?.trajectoryId || this._latestTrajectoryId;
+        const waitingPermKeys = new Set();
 
         // ── Scan steps (after send point) for WAITING (permission needed) ──
         for (let si = this._pollSendStepCount; si < numSteps; si++) {
             const step = steps[si];
             const stepStatus = step.status || '';
             const stepType = step.type || '';
-            if (!stepStatus.includes('WAITING')) { this._pollApprovedSteps.delete(si); continue; }
-            if (this._pollApprovedSteps.has(si)) continue;  // already approved, skip
+            const permKey = this._permKey(trajId, si);
+            if (!stepStatus.includes('WAITING')) {
+                this._pollApprovedSteps.delete(permKey);
+                this._clearPendingPermissionByKey(permKey);
+                continue;
+            }
+            waitingPermKeys.add(permKey);
+            if (this._pollApprovedSteps.has(permKey) || this._pendingToolCalls.has(permKey)) continue;
 
             let permType = 'browser';
             if (stepType.includes('RUN_COMMAND')) permType = 'run_command';
@@ -1206,12 +1389,10 @@ class Session extends EventEmitter {
             }
             if (permPath && !permPath.startsWith('file:///')) permPath = 'file:///' + permPath.replace(/\\/g, '/');
 
-            // Build contextTool from this step's toolCall
             const ctxTool = {};
             if (tc?.name) { ctxTool.tool = tc.name; }
             if (tc?.argumentsJson) { try { Object.assign(ctxTool, JSON.parse(tc.argumentsJson)); } catch {} }
 
-            const trajId = data.trajectory?.trajectoryId || this._latestTrajectoryId;
             const perm = {
                 type: permType,
                 contextTool: ctxTool,
@@ -1220,21 +1401,29 @@ class Session extends EventEmitter {
                 _trajectoryId: trajId,
                 _stepIndex: si,
             };
-            this._pendingToolCall = perm;
+            this._pendingToolCalls.set(permKey, perm);
             pktWrite(`POLL_PERM type=${permType} step=${si} tool=${tc?.name || '?'} cmd=${permCmd} path=${permPath}`);
             // Debounce: wait 1s before emitting — server sometimes auto-resolves WAITING
-            if (this._pendingPermTimer) { clearTimeout(this._pendingPermTimer); this._pendingPermTimer = null; }
-            this._pendingPermTimer = setTimeout(() => {
-                this._pendingPermTimer = null;
-                if (this._pendingToolCall === perm) {
+            const oldTimer = this._pendingPermTimers.get(permKey);
+            if (oldTimer) clearTimeout(oldTimer);
+            const timer = setTimeout(() => {
+                this._pendingPermTimers.delete(permKey);
+                if (this._pendingToolCalls.get(permKey) === perm) {
                     pktWrite(`PERM_DEBOUNCE_FIRE step=${si}`);
-                    this._pollApprovedSteps.add(si);
+                    this._pollApprovedSteps.add(permKey);
                     this._emitPermission(perm);
                 } else {
                     pktWrite(`PERM_DEBOUNCE_SKIP step=${si} (superseded)`);
                 }
             }, 1000);
-            return;
+            this._pendingPermTimers.set(permKey, timer);
+        }
+
+        for (const key of Array.from(this._pendingToolCalls.keys())) {
+            const perm = this._pendingToolCalls.get(key);
+            if (perm && perm._trajectoryId === trajId && perm._stepIndex >= this._pollSendStepCount && !waitingPermKeys.has(key)) {
+                this._clearPendingPermissionByKey(key);
+            }
         }
 
         // ── Collect ALL response text from steps after send point ──
@@ -1292,9 +1481,12 @@ class Session extends EventEmitter {
     // ── Send message ──
 
     async send(userText) {
+        let opts = {};
+        if (typeof arguments[1] === 'object' && arguments[1] !== null) opts = arguments[1];
+        const outgoingText = this._buildOutgoingUserText(userText, opts);
         const sendPayload = {
             cascadeId: this.cascadeId,
-            items: [{ text: userText }],
+            items: [{ text: outgoingText }],
             metadata: this.auth.metadata,
             cascadeConfig: this.cascadeConfig,
             clientType: 'CHAT_CLIENT_REQUEST_STREAM_CLIENT_TYPE_IDE',
@@ -1304,6 +1496,7 @@ class Session extends EventEmitter {
             this.emit('error', `Send failed (${sendRes.status}): ${sendRes.body.slice(0, 80)}`);
             return false;
         }
+        if (this._bootstrapPending) this._bootstrapPending = false;
         this._lastThinking = '';
         this._lastResponse = '';
         this._pollLastThinkingLen = 0;
@@ -1311,7 +1504,7 @@ class Session extends EventEmitter {
         this._pollSendStepCount = this._pollLastNumSteps;  // only look at steps AFTER this point
         this._pollApprovedSteps.clear();
         this._pollEmittedToolCalls.clear();
-        this._pendingToolCall = null;
+        this._clearAllPendingPermissions();
         this._lastAgentStatus = null;
         this._lastAgentExecutableStatus = null;
         this._lastAgentExecutorLoopStatus = null;
@@ -1334,7 +1527,7 @@ class Session extends EventEmitter {
         if (this._agentStateStream) { try { this._agentStateStream.abort(); } catch {} }
         if (this._agentStateReconnectTimer) clearTimeout(this._agentStateReconnectTimer);
         this._stopPolling();
-        if (this._pendingPermTimer) clearTimeout(this._pendingPermTimer);
+        this._clearAllPendingPermissions();
     }
 }
 
@@ -1483,6 +1676,7 @@ async function createSession(logger, opts = {}) {
     }
     const result = await session.resumeOrNew();
     if (!result) throw new Error('Failed to start or resume cascade session');
+    session.markBootstrapPending(!result.resumed);
     session.openStream();
     return { session, auth, ...result };
 }
@@ -1496,14 +1690,13 @@ async function createExtraSession(auth, cascadeId, { autoOpen = true } = {}) {
         const newId = await session.startNewCascade();
         if (!newId) throw new Error('Failed to start new cascade');
         session.cascadeId = newId;
+        session.markBootstrapPending(true);
     }
     if (autoOpen) session.openStream();
     return session;
 }
 
 // ─── Workspace helpers (shared by cli.js / telegram.js) ──────────────────────
-const RULES_PATH = path.join(__dirname, '.agents', 'rules', 'rules.md');
-
 function getCurrentWorkspace() {
     return loadConfig().activeWorkspace || 'workspace';
 }
@@ -1532,17 +1725,6 @@ function switchWorkspace(name) {
         const cfg = loadConfig();
         cfg.activeWorkspace = wsName;
         saveConfig(cfg);
-
-        let content = '';
-        try { content = fs.readFileSync(RULES_PATH, 'utf8'); } catch {}
-        if (/Current workspace: `[^`]+`/.test(content)) {
-            content = content.replace(/Current workspace: `[^`]+`/, `Current workspace: \`${wsName}/\``);
-        } else {
-            content = content.trimEnd() + `\nCurrent workspace: \`${wsName}/\`\n`;
-        }
-        const rulesDir = path.dirname(RULES_PATH);
-        if (!fs.existsSync(rulesDir)) fs.mkdirSync(rulesDir, { recursive: true });
-        fs.writeFileSync(RULES_PATH, content);
 
         const hasSoul = fs.existsSync(path.join(wsDir, 'soul.md'));
         return { ok: true, msg: `Workspace → ${wsName}/${hasSoul ? '' : ' (⚠️ no soul.md)'}` };
