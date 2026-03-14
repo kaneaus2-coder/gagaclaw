@@ -370,7 +370,7 @@ async function main() {
         const elapsed = Date.now() - st.lastEditTime;
         const interval = st.responseMsgId ? 1000 : 300;
         const delay = Math.max(0, interval - elapsed);
-        st.editTimer = setTimeout(async () => {
+        st.editTimer = setTimeout(() => {
             st.editTimer = null;
             st.lastEditTime = Date.now();
             if (!st.responseText) return; // thinking is shown via thinking handler
@@ -384,17 +384,19 @@ async function main() {
             if (truncated === st.lastEditContent) return;
             st.lastEditContent = truncated;
 
-            // Keep thinking and response in separate messages.
-            if (!st.responseMsgId) {
-                st.responseMsgId = await tgSend(chatId, truncated, HTML)
-                    || await tgSend(chatId, tail.slice(0, 3900));
-                return;
-            }
-
-            const ok = await tgEdit(chatId, st.responseMsgId, truncated, HTML);
-            if (!ok) {
-                await tgEdit(chatId, st.responseMsgId, tail.slice(0, 3900));
-            }
+            // Track in-flight edit so turnDone can await it
+            const doEdit = async () => {
+                if (!st.responseMsgId) {
+                    st.responseMsgId = await tgSend(chatId, truncated, HTML)
+                        || await tgSend(chatId, tail.slice(0, 3900));
+                    return;
+                }
+                const ok = await tgEdit(chatId, st.responseMsgId, truncated, HTML);
+                if (!ok) {
+                    await tgEdit(chatId, st.responseMsgId, tail.slice(0, 3900));
+                }
+            };
+            st._editInFlight = doEdit().finally(() => { st._editInFlight = null; });
         }, delay);
     }
 
@@ -499,6 +501,13 @@ async function main() {
         const chunks = splitText(finalText, 3500);
         flog(`[TURN_DONE] chunks=${chunks.length} sizes=[${chunks.map(c => c.length).join(',')}]`);
         (async () => {
+            // Wait for any in-flight streaming edit to complete (avoids race where
+            // responseMsgId is still null when turnDone sends the final message)
+            if (st._editInFlight) {
+                await st._editInFlight;
+                st._editInFlight = null;
+            }
+
             // Remove the thinking bubble only after the response is finalized.
             if (st.draftId) {
                 st.draftId = null;
