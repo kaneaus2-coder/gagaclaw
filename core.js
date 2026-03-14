@@ -189,19 +189,48 @@ function setConfigAgentic(val) {
 const tlsAgent = new https.Agent({ rejectUnauthorized: false });
 
 // ─── Packet logger ──────────────────────────────────────────────────────────
-const _pktEnabled = loadConfig().packetLog !== false;
-const pktLog = _pktEnabled
-    ? fs.createWriteStream(path.join(__dirname, 'network-packets.log'), { flags: 'w' })
-    : null;
+// packetLog: "full" = unlimited, "enable"/true = 10GB cap, "disable"/false/omitted = off
+const _pktMode = (() => {
+    const v = loadConfig().packetLog;
+    if (v === 'full') return 'full';
+    if (v === 'enable' || v === true) return 'enable';
+    return null; // disabled
+})();
+const _pktPath = path.join(__dirname, 'network-packets.log');
+const _pktMaxBytes = 5 * 1024 * 1024 * 1024; // 5 GB per file, ~10 GB total (current + old)
+let _pktBytesWritten = 0;
+let pktLog = _pktMode ? fs.createWriteStream(_pktPath, { flags: 'w' }) : null;
+
+const _pktOldPath = path.join(__dirname, 'network-packets.old.log');
+function _pktCheckRotate(bytes) {
+    if (_pktMode !== 'enable') return;
+    _pktBytesWritten += bytes;
+    if (_pktBytesWritten >= _pktMaxBytes) {
+        pktLog.end();
+        try { fs.renameSync(_pktPath, _pktOldPath); } catch {}
+        pktLog = fs.createWriteStream(_pktPath, { flags: 'w' });
+        _pktBytesWritten = 0;
+        const header = `Session (rotated): ${new Date().toISOString()}\n${'═'.repeat(60)}\n`;
+        pktLog.write(header);
+    }
+}
+
 const ts = () => new Date().toISOString().slice(11, 23);
-function pktWrite(msg) { if (pktLog) pktLog.write(`[${ts()}] ${msg}\n`); }
+function pktWrite(msg) {
+    if (!pktLog) return;
+    const line = `[${ts()}] ${msg}\n`;
+    pktLog.write(line);
+    _pktCheckRotate(line.length);
+}
 function pktWriteBlock(label, text) {
     if (!pktLog) return;
     pktWrite(label);
     const body = String(text ?? '');
     if (!body) return;
     for (const line of body.replace(/\r\n/g, '\n').split('\n')) {
-        pktLog.write(`    ${line}\n`);
+        const out = `    ${line}\n`;
+        pktLog.write(out);
+        _pktCheckRotate(out.length);
     }
 }
 if (pktLog) pktLog.write(`Session: ${new Date().toISOString()}\n${'═'.repeat(60)}\n`);
@@ -1376,7 +1405,15 @@ class Session extends EventEmitter {
         if (numSteps === 0) return;
         this._latestStepIndex = numSteps - 1;
 
-        if (!this._awaitingResponse) return;
+        if (!this._awaitingResponse) {
+            // Still scan for WAITING even when not awaiting response — browser/file perms can arrive late
+            let hasWaiting = false;
+            for (let si = this._pollSendStepCount; si < numSteps; si++) {
+                if ((steps[si].status || '').includes('WAITING')) { hasWaiting = true; break; }
+            }
+            if (!hasWaiting) return;
+            pktWrite(`PERM_SCAN_OVERRIDE awaitingResponse=false but WAITING found, scanning anyway (sendStep=${this._pollSendStepCount} steps=${numSteps})`);
+        }
 
         const trajId = data.trajectory?.trajectoryId || this._latestTrajectoryId;
         const waitingPermKeys = new Set();
@@ -1388,6 +1425,9 @@ class Session extends EventEmitter {
             const stepType = step.type || '';
             const permKey = this._permKey(trajId, si);
             if (!stepStatus.includes('WAITING')) {
+                if (this._pendingToolCalls.has(permKey)) {
+                    pktWrite(`PERM_CLEARED step=${si} type=${stepType} status=${stepStatus} (no longer WAITING)`);
+                }
                 this._pollApprovedSteps.delete(permKey);
                 this._clearPendingPermissionByKey(permKey);
                 continue;
@@ -1398,7 +1438,7 @@ class Session extends EventEmitter {
             let permType = 'browser';
             if (stepType.includes('RUN_COMMAND')) permType = 'run_command';
             else if (stepType.includes('MCP')) permType = 'mcp';
-            else if (stepType.includes('CODE_ACTION') || stepType.includes('VIEW_FILE') || stepType.includes('CREATE_FILE') || stepType.includes('EDIT_FILE')) permType = 'file';
+            else if (stepType.includes('CODE_ACTION') || stepType.includes('VIEW_FILE') || stepType.includes('CREATE_FILE') || stepType.includes('EDIT_FILE') || stepType.includes('LIST_DIR')) permType = 'file';
 
             const tc = step.metadata?.toolCall;
             let permPath = null, permCmd = null;
