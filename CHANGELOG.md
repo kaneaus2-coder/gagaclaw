@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.4.2 (2026-03-14)
+
+### Bug Fixes
+- **Browser subagent permission detection**: BROWSER_SUBAGENT steps use `subtrajectory.steps[]` for actual permissions (OPEN_BROWSER_URL, execute_browser_javascript, browser_press_key). Flattened subtrajectory steps into main scan loop so YOLO auto-approve now works for browser tools.
+- **Trajectory compaction**: Server can reduce step count between turns. Both `_pollSendStepCount` and `_pollLastNumSteps` now adjust when they exceed actual step count, preventing empty scan ranges.
+- **Telegram response duplication**: Streaming edit's `tgSend` could still be in-flight when `turnDone` fires, causing duplicate messages. Added `_editInFlight` promise tracking; `turnDone` now awaits it before sending.
+
+### Improvements
+- **Stuck trajectory detection**: After 60 stale polls (~30s) with no new steps while agent is RUNNING, emits `trajectoryStuck` event. Telegram and Discord notify user to use `/new`.
+- **Packet log verbosity**: `enable` mode now skips GetCascadeTrajectory request/response logging entirely. AGENT_STATE only logged on state changes. Prevents multi-GB log files from polling spam.
+
 ## v1.4.1 (2026-03-14)
 
 ### New Features
