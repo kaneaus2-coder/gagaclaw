@@ -671,7 +671,8 @@ async function main() {
             _savedMode = null;
             _savedAgentic = null;
         }
-        processCronQueue();
+        // Delay before next cron job — Cascade backend needs time to fully reset after IDLE
+        setTimeout(() => processCronQueue(), 3000);
     }
 
     async function processCronQueue() {
